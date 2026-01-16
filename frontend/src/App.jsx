@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import SwipeCards from './components/SwipeCards'
 import SavedJobs from './components/SavedJobs'
 import Filters from './components/Filters'
+import Profile from './components/Profile'
 import Header from './components/Header'
 
 function App() {
@@ -92,6 +93,13 @@ function App() {
 
         {currentView === 'filters' && (
           <Filters currentFilters={filters} onApplyFilters={handleApplyFilters} />
+        )}
+
+        {currentView === 'profile' && (
+          <Profile onBack={() => {
+            setCurrentView('swipe')
+            fetchJobs()
+          }} />
         )}
       </div>
     </div>

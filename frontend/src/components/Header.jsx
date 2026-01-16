@@ -26,6 +26,16 @@ function Header({ currentView, setCurrentView }) {
             >
               Saved Jobs
             </button>
+            <button
+              onClick={() => setCurrentView('profile')}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                currentView === 'profile'
+                  ? 'bg-primary text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              Profile
+            </button>
           </nav>
         </div>
       </div>

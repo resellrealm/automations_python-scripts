@@ -1,4 +1,6 @@
 import { Job, SavedJob } from '../models/Job.js'
+import { JobMatch } from '../models/UserProfile.js'
+import db from '../config/database.js'
 
 export const getJobs = (req, res) => {
   try {
@@ -10,7 +12,28 @@ export const getJobs = (req, res) => {
     }
 
     const jobs = Job.getAll(filters)
-    res.json(jobs)
+
+    // Attach match scores if available
+    const jobsWithMatches = jobs.map(job => {
+      const match = JobMatch.getByJobId(job.id)
+      return {
+        ...job,
+        matchScore: match ? match.matchScore : null,
+        matchReason: match ? match.matchReason : null
+      }
+    })
+
+    // Sort by match score (highest first) if matches exist
+    jobsWithMatches.sort((a, b) => {
+      if (a.matchScore !== null && b.matchScore !== null) {
+        return b.matchScore - a.matchScore
+      }
+      if (a.matchScore !== null) return -1
+      if (b.matchScore !== null) return 1
+      return 0
+    })
+
+    res.json(jobsWithMatches)
   } catch (error) {
     console.error('Error fetching jobs:', error)
     res.status(500).json({ error: 'Failed to fetch jobs' })

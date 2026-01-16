@@ -31,4 +31,33 @@ db.exec(`
   )
 `)
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_profile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    email TEXT,
+    phone TEXT,
+    location TEXT,
+    resumeText TEXT,
+    resumeFileName TEXT,
+    skills TEXT,
+    experience TEXT,
+    education TEXT,
+    preferences TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS job_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    jobId INTEGER NOT NULL,
+    matchScore INTEGER NOT NULL,
+    matchReason TEXT,
+    calculatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (jobId) REFERENCES jobs(id)
+  )
+`)
+
 export default db
