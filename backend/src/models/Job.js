@@ -49,8 +49,8 @@ export const Job = {
 
   create: (job) => {
     const stmt = db.prepare(`
-      INSERT INTO jobs (title, company, location, jobType, salary, industry, description, requirements)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO jobs (title, company, location, jobType, salary, industry, description, requirements, applicationUrl, companyWebsite, contactEmail, applicationNotes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const requirements = job.requirements ? JSON.stringify(job.requirements) : null
@@ -63,10 +63,96 @@ export const Job = {
       job.salary,
       job.industry,
       job.description,
-      requirements
+      requirements,
+      job.applicationUrl || null,
+      job.companyWebsite || null,
+      job.contactEmail || null,
+      job.applicationNotes || null
     )
 
     return result.lastInsertRowid
+  }
+}
+
+export const JobApplication = {
+  getAll: () => {
+    const stmt = db.prepare(`
+      SELECT ja.*, j.title, j.company, j.location, j.salary, j.jobType, j.applicationUrl, j.contactEmail
+      FROM job_applications ja
+      JOIN jobs j ON ja.jobId = j.id
+      ORDER BY ja.updatedAt DESC
+    `)
+    const apps = stmt.all()
+    return apps
+  },
+
+  getByJobId: (jobId) => {
+    const stmt = db.prepare('SELECT * FROM job_applications WHERE jobId = ? ORDER BY updatedAt DESC LIMIT 1')
+    return stmt.get(jobId)
+  },
+
+  create: (jobId, data = {}) => {
+    const stmt = db.prepare(`
+      INSERT INTO job_applications (jobId, status, notes, coverLetter)
+      VALUES (?, ?, ?, ?)
+    `)
+    const result = stmt.run(
+      jobId,
+      data.status || 'saved',
+      data.notes || null,
+      data.coverLetter || null
+    )
+    return result.lastInsertRowid
+  },
+
+  update: (id, data) => {
+    const updates = []
+    const values = []
+
+    if (data.status) {
+      updates.push('status = ?')
+      values.push(data.status)
+    }
+    if (data.appliedAt) {
+      updates.push('appliedAt = ?')
+      values.push(data.appliedAt)
+    }
+    if (data.notes !== undefined) {
+      updates.push('notes = ?')
+      values.push(data.notes)
+    }
+    if (data.coverLetter !== undefined) {
+      updates.push('coverLetter = ?')
+      values.push(data.coverLetter)
+    }
+
+    updates.push('updatedAt = CURRENT_TIMESTAMP')
+    values.push(id)
+
+    const stmt = db.prepare(`UPDATE job_applications SET ${updates.join(', ')} WHERE id = ?`)
+    const result = stmt.run(...values)
+    return result.changes
+  },
+
+  markApplied: (jobId) => {
+    const existing = JobApplication.getByJobId(jobId)
+    if (existing) {
+      return JobApplication.update(existing.id, {
+        status: 'applied',
+        appliedAt: new Date().toISOString()
+      })
+    } else {
+      return JobApplication.create(jobId, {
+        status: 'applied',
+        appliedAt: new Date().toISOString()
+      })
+    }
+  },
+
+  delete: (id) => {
+    const stmt = db.prepare('DELETE FROM job_applications WHERE id = ?')
+    const result = stmt.run(id)
+    return result.changes
   }
 }
 

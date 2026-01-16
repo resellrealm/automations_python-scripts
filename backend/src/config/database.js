@@ -18,6 +18,10 @@ db.exec(`
     industry TEXT NOT NULL,
     description TEXT NOT NULL,
     requirements TEXT,
+    applicationUrl TEXT,
+    companyWebsite TEXT,
+    contactEmail TEXT,
+    applicationNotes TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `)
@@ -56,6 +60,20 @@ db.exec(`
     matchScore INTEGER NOT NULL,
     matchReason TEXT,
     calculatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (jobId) REFERENCES jobs(id)
+  )
+`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS job_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    jobId INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'saved',
+    appliedAt DATETIME,
+    notes TEXT,
+    coverLetter TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (jobId) REFERENCES jobs(id)
   )
 `)
