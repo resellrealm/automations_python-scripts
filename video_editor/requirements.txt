@@ -1,0 +1,7 @@
+moviepy==1.0.3
+openai-whisper==20231117
+python-dotenv==1.0.1
+Pillow==10.3.0
+# ffmpeg must be installed system-wide:
+# Ubuntu/Debian: sudo apt install ffmpeg
+# macOS:         brew install ffmpeg

@@ -1,0 +1,95 @@
+{
+  "_instructions": "Fill in ALL fields with your real details. Remove this _instructions field when done. Leave fields blank ('') if not applicable.",
+
+  "personal": {
+    "first_name": "Your First Name",
+    "last_name": "Your Last Name",
+    "date_of_birth": "DD/MM/YYYY",
+    "email": "youremail@gmail.com",
+    "phone": "07700 000000",
+    "address_line_1": "123 Your Street",
+    "address_line_2": "",
+    "city": "London",
+    "county": "Greater London",
+    "postcode": "SW1A 1AA",
+    "nationality": "British",
+    "national_insurance_number": "QQ 12 34 56 A",
+    "right_to_work_uk": true,
+    "disability_or_health_condition": false,
+    "gender": "Prefer not to say",
+    "ethnicity": "Prefer not to say"
+  },
+
+  "education": [
+    {
+      "institution": "Your School / College Name",
+      "type": "Secondary School",
+      "start_date": "09/2020",
+      "end_date": "07/2022",
+      "qualifications": [
+        {"subject": "Mathematics", "grade": "A", "level": "GCSE"},
+        {"subject": "English Language", "grade": "B", "level": "GCSE"},
+        {"subject": "Computer Science", "grade": "A*", "level": "GCSE"},
+        {"subject": "Science (Double Award)", "grade": "BB", "level": "GCSE"}
+      ]
+    },
+    {
+      "institution": "Your Sixth Form / College Name",
+      "type": "Sixth Form",
+      "start_date": "09/2022",
+      "end_date": "07/2024",
+      "qualifications": [
+        {"subject": "Computer Science", "grade": "B", "level": "A-Level"},
+        {"subject": "Mathematics", "grade": "C", "level": "A-Level"},
+        {"subject": "Business Studies", "grade": "B", "level": "A-Level"}
+      ]
+    }
+  ],
+
+  "work_experience": [
+    {
+      "employer": "Company Name",
+      "job_title": "Your Role",
+      "start_date": "06/2023",
+      "end_date": "08/2023",
+      "current": false,
+      "description": "Brief description of your responsibilities and achievements."
+    }
+  ],
+
+  "skills": [
+    "Python", "JavaScript", "Problem solving", "Communication",
+    "Teamwork", "Time management", "Microsoft Office", "Git"
+  ],
+
+  "interests_and_hobbies": [
+    "Coding personal projects",
+    "Trading and financial markets",
+    "Content creation",
+    "Fitness"
+  ],
+
+  "personal_statement": "A motivated and ambitious individual with a strong interest in technology and software development. I am eager to apply my skills in a professional environment and develop further through an apprenticeship programme. I am a fast learner, team player, and passionate about building real-world solutions.",
+
+  "preferences": {
+    "desired_roles": ["Software Developer", "IT Support", "Data Analyst", "Web Developer", "Digital Marketing"],
+    "preferred_sectors": ["Technology", "Finance", "Digital", "Business"],
+    "preferred_locations": ["London", "Remote"],
+    "max_commute_miles": 30,
+    "min_weekly_wage": 200
+  },
+
+  "cv": {
+    "file_path": "/path/to/your/CV.pdf",
+    "file_name": "YourName_CV.pdf"
+  },
+
+  "references": [
+    {
+      "name": "Reference Name",
+      "relationship": "Teacher / Manager",
+      "email": "reference@example.com",
+      "phone": "07700 111111"
+    }
+  ]
+}
