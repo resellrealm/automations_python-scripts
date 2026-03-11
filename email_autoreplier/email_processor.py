@@ -1,13 +1,11 @@
 """
 Email Processor
-Core logic: fetch unread emails → classify → reply or escalate.
+Core logic: fetch unread → AI classify → reply or escalate.
 """
 
-import sys
-import os
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import re
 from shared.logger import get_logger
 import database
 import ai_handler
@@ -15,66 +13,62 @@ import escalation_queue
 
 logger = get_logger("email_processor")
 
-
-def _extract_email_address(sender: str) -> str:
-    """Extract plain email from 'Name <email@example.com>' format."""
-    match = re.search(r"<(.+?)>", sender)
-    return match.group(1) if match else sender.strip()
+# Folders created in Zoho to organise processed mail
+FOLDER_REPLIED   = "AI-Replied"
+FOLDER_ESCALATED = "Needs-Human"
 
 
-def process_inbox(gmail_client) -> dict:
+def process_inbox(zoho) -> dict:
     """
-    Main processing cycle:
+    Main cycle:
     1. Fetch unread emails
     2. Skip already-processed ones
-    3. For each new email: ask AI → reply or escalate
+    3. AI decision → auto-reply or escalate
 
-    Returns stats: {processed, replied, escalated, errors}
+    Returns stats dict.
     """
     stats = {"processed": 0, "replied": 0, "escalated": 0, "errors": 0}
 
-    emails = gmail_client.get_unread_emails()
-
+    emails = zoho.get_unread_emails()
     if not emails:
-        logger.info("No unread emails to process.")
+        logger.info("Inbox clear — nothing to process.")
         return stats
 
     for email in emails:
-        msg_id = email["message_id"]
+        uid = email["uid"]
 
-        if database.is_processed(msg_id):
-            logger.debug(f"Skipping already-processed email: {email['subject']}")
+        if database.is_processed(uid):
+            logger.debug(f"Already processed UID {uid} — skipping.")
             continue
 
         logger.info(f"Processing — '{email['subject']}' from {email['sender']}")
         stats["processed"] += 1
 
         try:
-            # Attach thread context so AI can see the conversation history
-            email["thread_context"] = gmail_client.get_thread_context(email["thread_id"])
+            # Get thread history for AI context
+            email["thread_context"] = zoho.get_thread_context(
+                email["subject"], email["sender"]
+            )
 
-            # Ask Kimi AI what to do
-            decision = ai_handler.analyse_email(email)
-            action = decision["action"]
+            decision   = ai_handler.analyse_email(email)
+            action     = decision["action"]
             confidence = decision.get("confidence", 0.0)
 
             if action == "AUTO_REPLY":
                 reply_text = decision["reply_text"]
-                sender_address = _extract_email_address(email["sender"])
 
-                gmail_client.send_reply(
-                    original_message_id=msg_id,
-                    thread_id=email["thread_id"],
-                    to=sender_address,
+                zoho.send_reply(
+                    to=email["sender"],
                     subject=email["subject"],
                     body=reply_text,
+                    reply_to_uid=uid,
                 )
-                gmail_client.mark_as_read(msg_id)
-                gmail_client.apply_label(msg_id, "AI-Replied")
+                zoho.mark_as_read(uid)
+                zoho.move_to_folder(uid, FOLDER_REPLIED)
 
                 database.record_email(
-                    message_id=msg_id,
-                    thread_id=email["thread_id"],
+                    message_id=uid,
+                    thread_id=uid,
                     sender=email["sender"],
                     subject=email["subject"],
                     received_at=email["received_at"],
@@ -83,18 +77,18 @@ def process_inbox(gmail_client) -> dict:
                     reply_preview=reply_text,
                 )
                 stats["replied"] += 1
-                logger.info(f"Auto-replied to '{email['subject']}' (confidence={confidence:.2f})")
+                logger.info(f"  Auto-replied (confidence={confidence:.2f})")
 
             elif action == "ESCALATE_TO_HUMAN":
                 reason = decision.get("escalation_reason", "No reason given")
 
                 escalation_queue.add_to_queue(email, reason=reason, confidence=confidence)
-                gmail_client.apply_label(msg_id, "Needs-Human")
-                gmail_client.mark_as_read(msg_id)
+                zoho.mark_as_read(uid)
+                zoho.move_to_folder(uid, FOLDER_ESCALATED)
 
                 database.record_email(
-                    message_id=msg_id,
-                    thread_id=email["thread_id"],
+                    message_id=uid,
+                    thread_id=uid,
                     sender=email["sender"],
                     subject=email["subject"],
                     received_at=email["received_at"],
@@ -105,10 +99,10 @@ def process_inbox(gmail_client) -> dict:
                 stats["escalated"] += 1
 
         except Exception as e:
-            logger.error(f"Error processing email '{email['subject']}': {e}", exc_info=True)
+            logger.error(f"Error on '{email['subject']}': {e}", exc_info=True)
             database.record_email(
-                message_id=msg_id,
-                thread_id=email.get("thread_id", ""),
+                message_id=uid,
+                thread_id=uid,
                 sender=email.get("sender", ""),
                 subject=email.get("subject", ""),
                 received_at=email.get("received_at", ""),
@@ -118,8 +112,7 @@ def process_inbox(gmail_client) -> dict:
             stats["errors"] += 1
 
     logger.info(
-        f"Cycle complete — processed: {stats['processed']}, "
-        f"replied: {stats['replied']}, escalated: {stats['escalated']}, "
-        f"errors: {stats['errors']}"
+        f"Cycle done — processed:{stats['processed']} "
+        f"replied:{stats['replied']} escalated:{stats['escalated']} errors:{stats['errors']}"
     )
     return stats
