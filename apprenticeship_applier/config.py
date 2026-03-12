@@ -31,8 +31,16 @@ class Config:
     HEADLESS: bool = os.getenv("HEADLESS", "true").lower() == "true"
 
     # gov.uk account
-    GOVUK_EMAIL: str = os.getenv("GOVUK_EMAIL", "")
+    GOVUK_EMAIL: str    = os.getenv("GOVUK_EMAIL", "")
     GOVUK_PASSWORD: str = os.getenv("GOVUK_PASSWORD", "")
+
+    # Telegram bot
+    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID: str   = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # CAPTCHA solving
+    TWOCAPTCHA_API_KEY: str = os.getenv("TWOCAPTCHA_API_KEY", "")  # optional, ~$3/1000 solves
+    VPS_IP: str             = os.getenv("VPS_IP", "")              # your VPS public IP for noVNC
 
     # Paths
     BASE_DIR: Path = Path(__file__).parent
@@ -55,6 +63,10 @@ class Config:
             missing.append("GOVUK_PASSWORD")
         if not Path(cls.PROFILE_FILE).exists():
             missing.append(f"user_profile.json (expected at {cls.PROFILE_FILE})")
+        if not cls.TELEGRAM_BOT_TOKEN:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not cls.TELEGRAM_CHAT_ID:
+            missing.append("TELEGRAM_CHAT_ID")
         if missing:
             raise EnvironmentError(
                 f"Missing required config: {', '.join(missing)}\n"

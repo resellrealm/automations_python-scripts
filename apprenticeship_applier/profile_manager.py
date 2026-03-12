@@ -40,7 +40,10 @@ class Profile:
 
     @property
     def cv_path(self) -> str:
-        return self.cv.get("file_path", "")
+        # Support both {"cv": {"file_path": ...}} and top-level "cv_path"
+        if isinstance(self.cv, dict):
+            return self.cv.get("file_path", "")
+        return self._data.get("cv_path", "")
 
     def to_summary_text(self) -> str:
         """

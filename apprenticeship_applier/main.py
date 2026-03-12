@@ -30,6 +30,7 @@ import ai_cover_letter
 import profile_manager
 import database
 from applier import ApprenticeshipApplier
+from notifier import get_notifier
 
 logger = get_logger("apprenticeship_applier", log_dir="logs")
 
@@ -55,6 +56,16 @@ def run_scrape() -> list:
     )
     new_jobs = scraper_module.scrape_all_keywords()
     logger.info(f"Found {len(new_jobs)} new listing(s).")
+    if new_jobs:
+        try:
+            get_notifier().send(
+                f"🔍 <b>Scrape complete</b>\n"
+                f"Found {len(new_jobs)} new apprenticeship listing(s).\n"
+                f"Keywords: {', '.join(Config.SEARCH_KEYWORDS)}\n"
+                f"Location: {Config.SEARCH_LOCATION}"
+            )
+        except Exception:
+            pass
     return new_jobs
 
 
