@@ -1,6 +1,12 @@
 """
-Email Processor
-Core logic: fetch unread → AI classify → reply or escalate.
+Email Processor — Nutrio+ Support with 1-Hour Reply Delay
+==========================================================
+Flow:
+  1. Fetch unread emails
+  2. AI analyses each one (with Nutrio knowledge baked in)
+  3. AUTO_REPLY → queued for 1 hour (looks human, not instant bot)
+  4. ESCALATE   → added to escalation queue for you to handle
+  5. Every cycle also checks for due queued replies and sends them
 """
 
 import sys, os
@@ -13,79 +19,73 @@ import escalation_queue
 
 logger = get_logger("email_processor")
 
-# Folders created in Zoho to organise processed mail
 FOLDER_REPLIED   = "AI-Replied"
 FOLDER_ESCALATED = "Needs-Human"
+REPLY_DELAY_HOURS = 1.0   # how long to wait before sending auto-reply
 
 
 def process_inbox(zoho) -> dict:
-    """
-    Main cycle:
-    1. Fetch unread emails
-    2. Skip already-processed ones
-    3. AI decision → auto-reply or escalate
+    """Main cycle — reads inbox, classifies emails, queues replies or escalates."""
+    stats = {"processed": 0, "queued": 0, "escalated": 0, "sent": 0, "errors": 0}
 
-    Returns stats dict.
-    """
-    stats = {"processed": 0, "replied": 0, "escalated": 0, "errors": 0}
+    # ── Step 1: Send any replies that are now due ──────────────────
+    sent = _flush_pending_replies(zoho)
+    stats["sent"] = sent
 
+    # ── Step 2: Read new unread emails ────────────────────────────
     emails = zoho.get_unread_emails()
     if not emails:
-        logger.info("Inbox clear — nothing to process.")
+        logger.info("Inbox clear.")
         return stats
 
     for email in emails:
         uid = email["uid"]
 
-        if database.is_processed(uid):
-            logger.debug(f"Already processed UID {uid} — skipping.")
+        # Skip if already processed OR already queued for reply
+        if database.is_processed(uid) or database.is_reply_pending(uid):
+            logger.debug(f"Already handled UID {uid} — skipping.")
             continue
 
-        logger.info(f"Processing — '{email['subject']}' from {email['sender']}")
+        logger.info(f"Analysing — '{email['subject']}' from {email['sender']}")
         stats["processed"] += 1
 
         try:
-            # Get thread history for AI context
-            email["thread_context"] = zoho.get_thread_context(
-                email["subject"], email["sender"]
-            )
-
+            email["thread_context"] = zoho.get_thread_context(email["subject"], email["sender"])
             decision   = ai_handler.analyse_email(email)
             action     = decision["action"]
             confidence = decision.get("confidence", 0.0)
 
             if action == "AUTO_REPLY":
-                reply_text = decision["reply_text"]
-
-                zoho.send_reply(
-                    to=email["sender"],
+                # Queue reply — don't send immediately (1 hour delay)
+                database.queue_reply(
+                    uid=uid,
+                    message_id=uid,
+                    sender=email["sender"],
                     subject=email["subject"],
-                    body=reply_text,
-                    reply_to_uid=uid,
+                    reply_text=decision["reply_text"],
+                    received_at=email["received_at"],
+                    delay_hours=REPLY_DELAY_HOURS,
                 )
-                zoho.mark_as_read(uid)
-                zoho.move_to_folder(uid, FOLDER_REPLIED)
-
+                # Record in DB as "queued" so we don't re-process
                 database.record_email(
                     message_id=uid,
                     thread_id=uid,
                     sender=email["sender"],
                     subject=email["subject"],
                     received_at=email["received_at"],
-                    action="replied",
+                    action="queued",
                     ai_confidence=confidence,
-                    reply_preview=reply_text,
+                    reply_preview=decision["reply_text"],
                 )
-                stats["replied"] += 1
-                logger.info(f"  Auto-replied (confidence={confidence:.2f})")
+                zoho.mark_as_read(uid)
+                stats["queued"] += 1
+                logger.info(f"  Queued reply (sends in {REPLY_DELAY_HOURS}h) — conf={confidence:.2f}")
 
             elif action == "ESCALATE_TO_HUMAN":
                 reason = decision.get("escalation_reason", "No reason given")
-
                 escalation_queue.add_to_queue(email, reason=reason, confidence=confidence)
                 zoho.mark_as_read(uid)
                 zoho.move_to_folder(uid, FOLDER_ESCALATED)
-
                 database.record_email(
                     message_id=uid,
                     thread_id=uid,
@@ -101,18 +101,45 @@ def process_inbox(zoho) -> dict:
         except Exception as e:
             logger.error(f"Error on '{email['subject']}': {e}", exc_info=True)
             database.record_email(
-                message_id=uid,
-                thread_id=uid,
-                sender=email.get("sender", ""),
-                subject=email.get("subject", ""),
-                received_at=email.get("received_at", ""),
-                action="error",
-                error=str(e),
+                message_id=uid, thread_id=uid,
+                sender=email.get("sender", ""), subject=email.get("subject", ""),
+                received_at=email.get("received_at", ""), action="error", error=str(e),
             )
             stats["errors"] += 1
 
     logger.info(
-        f"Cycle done — processed:{stats['processed']} "
-        f"replied:{stats['replied']} escalated:{stats['escalated']} errors:{stats['errors']}"
+        f"Cycle — processed:{stats['processed']} queued:{stats['queued']} "
+        f"sent:{stats['sent']} escalated:{stats['escalated']} errors:{stats['errors']}"
     )
     return stats
+
+
+def _flush_pending_replies(zoho) -> int:
+    """Send all queued replies whose 1-hour wait is up."""
+    due = database.get_due_replies()
+    sent_count = 0
+
+    for row in due:
+        try:
+            zoho.send_reply(
+                to=row["sender"],
+                subject=row["subject"],
+                body=row["reply_text"],
+            )
+            database.mark_reply_sent(row["message_id"])
+
+            # Move original email to AI-Replied folder
+            try:
+                zoho.move_to_folder(row["uid"], "AI-Replied")
+            except Exception:
+                pass  # non-critical
+
+            sent_count += 1
+            logger.info(f"Sent delayed reply → {row['sender']} | {row['subject']}")
+
+        except Exception as e:
+            logger.error(f"Failed to send queued reply to {row['sender']}: {e}")
+
+    if sent_count:
+        logger.info(f"Flushed {sent_count} queued reply/replies.")
+    return sent_count
