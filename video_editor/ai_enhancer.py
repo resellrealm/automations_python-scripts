@@ -1,8 +1,13 @@
 """
 AI Enhancer
-Uses Kimi AI to generate a punchy title, description, and hashtags.
+Uses Kimi AI (Moonshot) to generate a punchy title, description, and hashtags.
 Highly token-efficient — sends only the transcript (truncated) and platform.
 Single API call, ~300 input tokens, ~150 output tokens.
+
+Uses token_budget.py for:
+  - Result caching by content hash (never re-calls AI for same video)
+  - Daily token tracking (hard stops at budget limit)
+  - Adaptive truncation based on remaining budget
 """
 
 import sys, os, json
@@ -11,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.kimi_client import KimiClient
 from shared.logger import get_logger
 from config import Config
+import token_budget as budget
 
 logger = get_logger("ai_enhancer")
 
@@ -24,7 +30,8 @@ Return JSON: {{"title":"<punchy title ≤60 chars>","description":"<2 sentence c
 def generate_metadata(transcript: str, platform: str = "tiktok") -> dict:
     """
     Generate title, description, hashtags and CTA for a video.
-    Token-efficient: truncates transcript to 400 chars.
+    Checks cache first — if same transcript already processed, returns cached result.
+    Token-efficient: adapts truncation based on daily budget remaining.
 
     Returns:
         {"title": str, "description": str, "hashtags": list[str], "cta": str}
@@ -33,18 +40,29 @@ def generate_metadata(transcript: str, platform: str = "tiktok") -> dict:
         logger.warning("No AI_API_KEY set — using placeholder metadata.")
         return _placeholder(transcript)
 
-    # Truncate transcript to keep tokens minimal
-    snippet = transcript[:400].rsplit(" ", 1)[0] if len(transcript) > 400 else transcript
-    user_msg = _USER_TMPL.format(platform=platform.replace("_", " "), transcript=snippet)
+    cache_key = budget.content_hash(transcript + platform)
 
-    try:
-        client = KimiClient()
-        result = client.chat_json(user_msg, system_prompt=_SYSTEM, temperature=0.7, max_tokens=300)
-        logger.info(f"AI metadata generated: title='{result.get('title', '')}'")
-        return result
-    except Exception as e:
-        logger.warning(f"AI metadata failed ({e}) — using placeholder.")
+    def _call():
+        snippet = budget.smart_truncate(transcript, max_tokens=400)
+        user_msg = _USER_TMPL.format(platform=platform.replace("_", " "), transcript=snippet)
+        model = budget.pick_model(len(user_msg))
+        try:
+            client = KimiClient(model=model)
+            result = client.chat_json(user_msg, system_prompt=_SYSTEM, temperature=0.7, max_tokens=300)
+            logger.info(f"AI metadata generated: title='{result.get('title', '')}' | {budget.status()}")
+            return result
+        except Exception as e:
+            logger.warning(f"AI metadata failed ({e}) — using placeholder.")
+            return None
+
+    result = budget.cached_ai_call(cache_key, _call, estimated_tokens=500)
+
+    if result is None:
+        if not budget.budget_ok():
+            logger.warning(f"Daily token budget exhausted — using placeholder. | {budget.status()}")
         return _placeholder(transcript)
+
+    return result
 
 
 def _placeholder(transcript: str) -> dict:
