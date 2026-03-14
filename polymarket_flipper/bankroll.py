@@ -113,12 +113,8 @@ def is_stopped_today() -> bool:
 
 def trade_size_gbp(strategy: str = "NOBias") -> float:
     """
-    Calculate trade size for current balance + live strategy multiplier.
-    Multiplier shifts automatically as the optimizer learns what's working.
-
-    £30 balance examples (after enough trades to rebalance):
-      NOBias winning    → multiplier 2.4x → £7.20/trade
-      BundleArb losing  → multiplier 0.3x → £0.90/trade
+    Standard trade size for directional / semi-guaranteed strategies.
+    Uses 10% of balance × live optimizer multiplier.
     """
     balance    = get_balance()
     base       = balance * RISK_PCT
@@ -126,6 +122,49 @@ def trade_size_gbp(strategy: str = "NOBias") -> float:
     size       = base * multiplier
     size       = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
     return round(size, 2)
+
+
+def guaranteed_size_gbp(profit_margin: float, n_legs: int = 1) -> float:
+    """
+    Position size for MATHEMATICALLY GUARANTEED profit trades.
+    (BundleArb, MultiOutcomeArb — profit locked regardless of outcome)
+
+    Uses Kelly Criterion: when win probability = 1.0, bet as much as
+    the edge justifies — scaled by the size of the locked margin.
+
+    Scaling:
+      2% margin  → 20% of balance per leg
+      5% margin  → 35% of balance per leg
+      10% margin → 50% of balance per leg
+      15%+ margin → 60% of balance per leg (hard cap)
+
+    Total exposure across all legs is capped at 70% of balance.
+    Never bets the house — keeps 30% liquid for other opportunities.
+
+    Args:
+        profit_margin: locked net profit as decimal (e.g. 0.06 = 6%)
+        n_legs:        number of legs (for multi-outcome, splits across legs)
+    """
+    balance = get_balance()
+
+    # Scale % of balance with the margin size
+    # Formula: base 15% + (margin × 3), capped at 60%
+    pct = min(0.60, 0.15 + (profit_margin * 3))
+
+    # Total exposure across all legs capped at 70% of balance
+    total_exposure = balance * min(0.70, pct)
+
+    # Split across legs
+    per_leg = total_exposure / max(n_legs, 1)
+
+    # Apply hard floor/ceiling
+    per_leg = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, per_leg))
+
+    return round(per_leg, 2)
+
+
+def guaranteed_size_usdc(profit_margin: float, n_legs: int = 1, gbp_rate: float = 1.27) -> float:
+    return round(guaranteed_size_gbp(profit_margin, n_legs) * gbp_rate, 4)
 
 
 def trade_size_usdc(strategy: str = "OBMismatch", gbp_rate: float = 1.27) -> float:

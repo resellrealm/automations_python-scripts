@@ -81,10 +81,14 @@ def scan_multi_outcome(dry_run: bool) -> int:
     signals = multi_detector.scan(limit=100)
 
     for sig in signals:
+        # Guaranteed profit — bet heavily, scaled to actual locked margin
+        size_gbp = br.guaranteed_size_gbp(sig.net_profit, n_legs=sig.n_legs)
+
         logger.warning(
             f"MULTI-OUTCOME ARB | {sig.event_title[:60]} | "
             f"{sig.n_legs} outcomes | YES_sum={sig.yes_sum:.3f} | "
-            f"net={sig.net_profit*100:.2f}% GUARANTEED"
+            f"net={sig.net_profit*100:.2f}% GUARANTEED | "
+            f"£{size_gbp:.2f}/leg × {sig.n_legs} legs = £{size_gbp*sig.n_legs:.2f} total"
         )
 
         legs_placed = 0
@@ -92,7 +96,7 @@ def scan_multi_outcome(dry_run: bool) -> int:
             if not leg.no_token_id:
                 continue
 
-            shares = calc_shares(leg.no_price, "FlashCrash")   # 1.5x multiplier
+            shares = round(size_gbp * 1.27 / leg.no_price, 2)
 
             tid = place_buy(
                 token_id  = leg.no_token_id,
@@ -142,13 +146,17 @@ def scan_bundle_arb(markets: list, dry_run: bool) -> int:
         if not sig:
             continue
 
+        # Guaranteed profit — use heavy sizing scaled to the locked margin
+        size_gbp   = br.guaranteed_size_gbp(sig.fee_adjusted, n_legs=2)
+        size_usdc  = size_gbp * br.GBP_TO_USDC if hasattr(br, 'GBP_TO_USDC') else size_gbp * 1.27
+        yes_shares = round(size_gbp * 1.27 / yes_tok.best_ask, 2)
+        no_shares  = round(size_gbp * 1.27 / no_tok.best_ask,  2)
+
         logger.warning(
             f"BUNDLE ARB | {yes_tok.question[:65]} | "
-            f"bundle={sig.bundle_cost:.3f} net={sig.fee_adjusted*100:.2f}% guaranteed"
+            f"bundle={sig.bundle_cost:.3f} net={sig.fee_adjusted*100:.2f}% guaranteed | "
+            f"sizing £{size_gbp:.2f}/leg (locked profit → heavy bet)"
         )
-
-        yes_shares = calc_shares(yes_tok.best_ask, "FlashCrash")   # 1.5x multiplier
-        no_shares  = calc_shares(no_tok.best_ask,  "FlashCrash_NO")
 
         tid = place_buy(
             token_id  = yes_tok.token_id,
@@ -195,11 +203,16 @@ def scan_resolution_lag(markets: list, dry_run: bool) -> int:
             if not sig:
                 continue
 
-            shares = calc_shares(sig.win_price, "OBMismatch")   # 1.0x sizing
+            # Semi-guaranteed — bet heavier than directional but less than pure arb
+            # Scale with confidence: 92¢ winner gets more than 88¢ winner
+            semi_margin = sig.profit_margin * sig.confidence   # discount by confidence
+            size_gbp    = br.guaranteed_size_gbp(semi_margin, n_legs=1)
+            shares      = round(size_gbp * 1.27 / sig.win_price, 2)
+
             logger.info(
                 f"RESOLUTION LAG | {info.question[:65]} | "
                 f"YES={sig.win_price:.3f} | {sig.minutes_overdue:.0f}m past end | "
-                f"profit={sig.profit_margin*100:.2f}%"
+                f"profit={sig.profit_margin*100:.2f}% | sizing £{size_gbp:.2f}"
             )
 
             tid = place_buy(
