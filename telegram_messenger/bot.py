@@ -1,33 +1,35 @@
 """
-OpenClaw — Telegram Messenger Bot
-===================================
-Pure relay. No commands, no state, no logic.
+OpenClaw — VPS Command Bot
+===========================
+Messages you send → real actions on the VPS.
 
-Any message from the authorized user:
-  - Starts with /kimi → sent to Kimi AI (fast/cheap)
-  - Everything else  → sent to Claude CLI (claude -p "...")
+Commands:
+  status          → show all running bots + recent tasks
+  scan            → run one Polymarket market scan (background, texts you when done)
+  apply           → run apprenticeship applier (background, texts you when done)
+  balance / p&l   → show Polymarket P&L
+  logs [bot]      → tail the last 30 lines of a bot log
+  start bots      → start all bots via heartbeat
+  stop bots       → stop all bots
+  done? / is it done? → check background task status
+  /kimi <msg>     → send to Kimi AI (fast, cheap)
+  anything else   → send to Claude CLI
 
-Replies arrive as plain text and are forwarded back to Telegram.
-
-Setup:
-  1. Create bot via @BotFather → copy token to .env
-  2. Get your Telegram user ID from @userinfobot → copy to .env
-  3. pip install python-telegram-bot requests python-dotenv
-  4. python bot.py
-
-Run as daemon on VPS:
-  nohup python bot.py >> openclaw.log 2>&1 &
+Run on VPS:
+    nohup python telegram_messenger/bot.py >> openclaw.log 2>&1 &
 """
 
+import json
 import logging
 import subprocess
-import requests as req
 from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID, AI_API_URL, AI_API_KEY, KIMI_MODEL
+
+import requests as req
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,39 +38,82 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+PROJECT = Path(__file__).parent.parent
+
 HELP_TEXT = (
-    "🤖 <b>OpenClaw Messenger</b>\n\n"
-    "Send any message → Claude answers\n"
-    "Start with <code>/kimi</code> → Kimi AI answers\n\n"
-    "<b>Quick shortcuts:</b>\n"
-    "  <code>done?</code> or <code>is it done</code> → task status\n"
-    "  <code>status</code> → all bots + tasks health\n"
-    "  <code>balance</code> → Polymarket P&amp;L\n\n"
-    "That's it. No other commands."
+    "🤖 <b>OpenClaw — VPS Control</b>\n\n"
+    "<b>Bot commands:</b>\n"
+    "  <code>status</code>       — all bots + task status\n"
+    "  <code>scan</code>         — run Polymarket scan now\n"
+    "  <code>apply</code>        — run apprenticeship applier\n"
+    "  <code>balance</code>      — Polymarket P&amp;L\n"
+    "  <code>logs</code>         — show recent bot logs\n"
+    "  <code>logs poly</code>    — Polymarket log\n"
+    "  <code>logs kalshi</code>  — Kalshi log\n"
+    "  <code>start bots</code>   — start all trading bots\n"
+    "  <code>stop bots</code>    — stop all trading bots\n"
+    "  <code>done?</code>        — check if background task finished\n\n"
+    "<b>AI:</b>\n"
+    "  <code>/kimi msg</code>    — ask Kimi AI\n"
+    "  <code>anything else</code>— ask Claude\n"
 )
 
-# Phrases that mean "check task status"
+# ── Quick phrase matchers ─────────────────────────────────────────────────────
+
 TASK_STATUS_PHRASES = {
     "done?", "is it done", "is it done?", "done yet", "done yet?",
     "finished?", "finished yet", "are you done", "are you done?",
     "is the task done", "task done?", "task status", "what's the status",
     "whats the status", "still running?", "still going?",
 }
+STATUS_PHRASES   = {"status", "bot status", "all bots", "health", "health check"}
+BALANCE_PHRASES  = {"balance", "pnl", "p&l", "how much", "profit", "money", "earnings"}
+SCAN_PHRASES     = {"scan", "scan markets", "scan now", "run scan", "check markets"}
+APPLY_PHRASES    = {"apply", "apply jobs", "apply now", "run apply", "apprenticeship"}
+LOGS_PHRASES     = {"logs", "log", "show logs", "recent logs"}
+START_PHRASES    = {"start bots", "start all", "start trading", "launch bots"}
+STOP_PHRASES     = {"stop bots", "stop all", "stop trading", "kill bots"}
 
-# Phrases that mean "check all bots"
-STATUS_PHRASES = {"status", "bot status", "all bots", "health", "health check"}
 
-# Phrases that mean "show P&L"
-BALANCE_PHRASES = {"balance", "pnl", "p&l", "how much", "profit", "money", "earnings"}
+# ── VPS helpers ───────────────────────────────────────────────────────────────
+
+def _run(cmd: list, cwd=None, timeout=10) -> str:
+    """Run a shell command, return stdout+stderr combined."""
+    try:
+        r = subprocess.run(
+            cmd, cwd=cwd or PROJECT,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return (r.stdout + r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return "[timed out]"
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def _background_task(name: str, cmd: str) -> str:
+    """Start a task via task_runner (background, texts when done)."""
+    import os
+    runner = PROJECT / "vps_tasks" / "task_runner.py"
+    log    = PROJECT / "vps_tasks" / f"{name.replace(' ', '_')}.log"
+    try:
+        subprocess.Popen(
+            ["python", str(runner), "--name", name, "--cmd", cmd],
+            cwd=str(PROJECT),
+            stdout=open(log, "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return f"⏳ <b>{name}</b> started in background.\nI'll text you when it's done."
+    except Exception as e:
+        return f"❌ Failed to start {name}: {e}"
 
 
 def _quick_task_status() -> str:
-    """Read tasks.json and return a quick status string."""
-    tasks_file = Path(__file__).parent.parent / "vps_tasks" / "tasks.json"
+    tasks_file = PROJECT / "vps_tasks" / "tasks.json"
     if not tasks_file.exists():
         return "📭 No background tasks recorded."
     try:
-        import json
         tasks = json.loads(tasks_file.read_text())
         if not tasks:
             return "📭 No background tasks recorded."
@@ -89,23 +134,109 @@ def _quick_task_status() -> str:
         return f"❌ Could not read task status: {e}"
 
 
+def _full_status() -> str:
+    """Show running processes + recent tasks."""
+    lines = ["📊 <b>VPS Status</b>\n"]
+
+    # Check which bots are running via pgrep
+    bots = {
+        "Polymarket": "polymarket_flipper/main.py",
+        "Kalshi":     "kalshi_flipper/main.py",
+        "Oddpool":    "oddpool/main.py",
+        "Heartbeat":  "heartbeat.py",
+        "OpenClaw":   "telegram_messenger/bot.py",
+    }
+    bot_lines = []
+    for name, pattern in bots.items():
+        r = subprocess.run(["pgrep", "-f", pattern], capture_output=True)
+        icon = "🟢" if r.returncode == 0 else "🔴"
+        bot_lines.append(f"  {icon} {name}")
+    lines.append("<b>Bots:</b>\n" + "\n".join(bot_lines))
+
+    # Recent tasks
+    task_status = _quick_task_status()
+    if "No background" not in task_status:
+        lines.append("\n<b>Recent tasks:</b>\n" + task_status)
+
+    return "\n".join(lines)
+
+
+def _tail_log(bot_name: str = "") -> str:
+    """Tail last 30 lines of a bot log."""
+    logs = {
+        "poly":    PROJECT / "polymarket_flipper" / "bot.log",
+        "kalshi":  PROJECT / "kalshi_flipper" / "bot.log",
+        "oddpool": PROJECT / "oddpool" / "bot.log",
+        "heart":   PROJECT / "heartbeat.log",
+        "openclaw":PROJECT / "telegram_messenger" / "openclaw.log",
+    }
+    bot_name = bot_name.lower().strip()
+    # match partial name
+    matched = None
+    for key, path in logs.items():
+        if key in bot_name or bot_name in key:
+            matched = path
+            break
+    if not matched:
+        # default: polymarket
+        matched = logs["poly"]
+
+    if not matched.exists():
+        return f"❌ Log not found: {matched.name}"
+
+    lines = matched.read_text(errors="ignore").splitlines()[-30:]
+    return f"<code>{'chr(10)'.join(lines)}</code>" if lines else "Log is empty."
+
+
+def _polymarket_balance() -> str:
+    """Read today's P&L from trade logger."""
+    try:
+        r = _run(
+            ["python", "-c",
+             "from polymarket_flipper.trade_logger import get_daily_summary; "
+             "import json; print(json.dumps(get_daily_summary()))"],
+            timeout=15,
+        )
+        data = json.loads(r)
+        pnl  = data.get("pnl_gbp", 0)
+        trades = data.get("trades_closed", 0)
+        return (
+            f"💰 <b>Today's P&amp;L</b>\n"
+            f"PnL: £{pnl:+.2f}\n"
+            f"Trades closed: {trades}"
+        )
+    except Exception:
+        # Fallback: read bankroll
+        try:
+            bf = PROJECT / "polymarket_flipper" / "bankroll.json"
+            if bf.exists():
+                data = json.loads(bf.read_text())
+                bal = data.get("balance_gbp", "?")
+                return f"💰 <b>Bankroll</b>: £{bal}"
+        except Exception:
+            pass
+        return "❌ Could not fetch balance."
+
+
 # ── AI backends ───────────────────────────────────────────────────────────────
 
 def ask_claude(message: str) -> str:
-    """Route message to Claude CLI and return response."""
+    """Route message to Claude CLI (-p flag)."""
     try:
         result = subprocess.run(
-            ["claude", "-p", message],
-            capture_output=True,
-            text=True,
-            timeout=120,
+            ["claude", "-p", message, "--output-format", "text"],
+            capture_output=True, text=True, timeout=120, cwd=str(PROJECT),
         )
         response = result.stdout.strip()
         if not response and result.stderr:
             response = result.stderr.strip()
         return response or "Claude returned an empty response."
     except FileNotFoundError:
-        return "❌ Claude CLI not found. Make sure `claude` is installed and in PATH."
+        return (
+            "❌ Claude CLI not found on this machine.\n"
+            "Install it: curl -fsSL https://claude.ai/install.sh | bash\n"
+            "Then: claude login"
+        )
     except subprocess.TimeoutExpired:
         return "❌ Claude timed out (120s)."
     except Exception as e:
@@ -113,14 +244,13 @@ def ask_claude(message: str) -> str:
 
 
 def ask_kimi(message: str) -> str:
-    """Route message to Kimi AI via OpenAI-compatible API."""
+    """Route message to Kimi via Moonshot API."""
     if not AI_API_URL or not AI_API_KEY:
-        return "❌ Kimi not configured. Set AI_API_URL and AI_API_KEY in .env"
+        return "❌ Kimi not configured. Set AI_API_URL and AI_API_KEY (or KIMI_API_KEY) in .env"
     try:
-        # Build endpoint — handle trailing slash or missing /chat/completions
         base = AI_API_URL.rstrip("/")
         if not base.endswith("/chat/completions"):
-            base = base + "/chat/completions"
+            base += "/chat/completions"
 
         resp = req.post(
             base,
@@ -137,14 +267,13 @@ def ask_kimi(message: str) -> str:
         return f"❌ Kimi error: {e}"
 
 
-# ── Telegram handlers ─────────────────────────────────────────────────────────
+# ── Telegram handler ──────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # Only respond to the authorized user
     if user_id != TELEGRAM_USER_ID:
-        logger.warning(f"Unauthorized access attempt from user_id={user_id}")
+        logger.warning(f"Unauthorized: user_id={user_id}")
         await update.message.reply_text("❌ Not authorized.")
         return
 
@@ -152,43 +281,86 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
 
-    # /help
-    if text.lower() in ("/help", "/start"):
+    tl = text.lower().strip("?! ")
+
+    # ── /help or /start ──────────────────────────────────────
+    if tl in ("/help", "/start", "help"):
         await update.message.reply_html(HELP_TEXT)
         return
 
-    # Quick shortcuts — no need to go to Claude
-    text_lower = text.lower().strip("?! ")
-    if text_lower in TASK_STATUS_PHRASES or "done" in text_lower and len(text) < 30:
+    # ── Task status: "done?" ─────────────────────────────────
+    if tl in TASK_STATUS_PHRASES or ("done" in tl and len(text) < 30):
         await update.message.reply_html(_quick_task_status())
         return
 
-    if text_lower in STATUS_PHRASES:
-        result = subprocess.run(
-            ["python", "vps_tasks/task_runner.py", "--status"],
-            capture_output=True, text=True, cwd=str(Path(__file__).parent.parent)
-        )
-        reply = result.stdout.strip() or "No task data."
-        await update.message.reply_html(reply or "No tasks running.")
+    # ── Full VPS status ──────────────────────────────────────
+    if tl in STATUS_PHRASES:
+        await update.message.reply_html(_full_status())
         return
 
-    # Route
+    # ── Balance / P&L ────────────────────────────────────────
+    if tl in BALANCE_PHRASES:
+        await update.message.reply_html(_polymarket_balance())
+        return
+
+    # ── Scan markets (background task) ───────────────────────
+    if tl in SCAN_PHRASES:
+        reply = _background_task(
+            "Market Scan",
+            "python polymarket_flipper/main.py --dry-run --once",
+        )
+        await update.message.reply_html(reply)
+        return
+
+    # ── Run apprenticeship applier (background task) ─────────
+    if tl in APPLY_PHRASES:
+        reply = _background_task(
+            "Apply Jobs",
+            "python apprenticeship_applier/main.py --apply --limit 5",
+        )
+        await update.message.reply_html(reply)
+        return
+
+    # ── Tail logs ────────────────────────────────────────────
+    if any(p in tl for p in LOGS_PHRASES):
+        # e.g. "logs poly" → tail polymarket log
+        suffix = tl.replace("logs", "").replace("log", "").strip()
+        await update.message.reply_html(_tail_log(suffix))
+        return
+
+    # ── Start bots ───────────────────────────────────────────
+    if tl in START_PHRASES:
+        reply = _background_task(
+            "Start Bots",
+            "python claude_agents/heartbeat.py",
+        )
+        await update.message.reply_html(reply)
+        return
+
+    # ── Stop bots ────────────────────────────────────────────
+    if tl in STOP_PHRASES:
+        out = _run(["pkill", "-f", "polymarket_flipper/main.py"])
+        _run(["pkill", "-f", "kalshi_flipper/main.py"])
+        _run(["pkill", "-f", "oddpool/main.py"])
+        await update.message.reply_html("🛑 <b>All trading bots stopped.</b>")
+        return
+
+    # ── /kimi → Kimi AI ──────────────────────────────────────
     if text.lower().startswith("/kimi"):
         query = text[5:].strip() or "hello"
         logger.info(f"→ Kimi: {query[:80]}")
         await update.message.reply_text("⏳ Asking Kimi...")
         response = ask_kimi(query)
+
+    # ── Everything else → Claude CLI ─────────────────────────
     else:
         logger.info(f"→ Claude: {text[:80]}")
         await update.message.reply_text("⏳ Asking Claude...")
         response = ask_claude(text)
 
-    # Telegram has a 4096 char limit — split if needed
-    if len(response) <= 4096:
-        await update.message.reply_text(response)
-    else:
-        for i in range(0, len(response), 4096):
-            await update.message.reply_text(response[i:i+4096])
+    # Split long responses (Telegram 4096 char limit)
+    for i in range(0, max(len(response), 1), 4096):
+        await update.message.reply_text(response[i:i + 4096])
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
