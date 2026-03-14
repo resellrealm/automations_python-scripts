@@ -27,9 +27,7 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID, AI_API_URL, AI_API_KEY, KIMI_MODEL
-
-import requests as req
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID
 
 logging.basicConfig(
     level=logging.INFO,
@@ -220,51 +218,36 @@ def _polymarket_balance() -> str:
 
 # ── AI backends ───────────────────────────────────────────────────────────────
 
-def ask_claude(message: str) -> str:
-    """Route message to Claude CLI (-p flag)."""
+KIMI_CLI = PROJECT / "kimi_cli.py"
+
+
+def _run_ai(cmd: list, timeout: int = 120) -> str:
+    """Run an AI CLI command, return its stdout."""
     try:
         result = subprocess.run(
-            ["claude", "-p", message, "--output-format", "text"],
-            capture_output=True, text=True, timeout=120, cwd=str(PROJECT),
+            cmd, capture_output=True, text=True,
+            timeout=timeout, cwd=str(PROJECT),
         )
         response = result.stdout.strip()
         if not response and result.stderr:
             response = result.stderr.strip()
-        return response or "Claude returned an empty response."
-    except FileNotFoundError:
-        return (
-            "❌ Claude CLI not found on this machine.\n"
-            "Install it: curl -fsSL https://claude.ai/install.sh | bash\n"
-            "Then: claude login"
-        )
+        return response or "(empty response)"
     except subprocess.TimeoutExpired:
-        return "❌ Claude timed out (120s)."
+        return f"❌ Timed out ({timeout}s)."
+    except FileNotFoundError:
+        return f"❌ Command not found: {cmd[0]}"
     except Exception as e:
-        return f"❌ Claude error: {e}"
+        return f"❌ Error: {e}"
+
+
+def ask_claude(message: str) -> str:
+    """Send message to Claude CLI (`claude -p`)."""
+    return _run_ai(["claude", "-p", message, "--output-format", "text"])
 
 
 def ask_kimi(message: str) -> str:
-    """Route message to Kimi via Moonshot API."""
-    if not AI_API_URL or not AI_API_KEY:
-        return "❌ Kimi not configured. Set AI_API_URL and AI_API_KEY (or KIMI_API_KEY) in .env"
-    try:
-        base = AI_API_URL.rstrip("/")
-        if not base.endswith("/chat/completions"):
-            base += "/chat/completions"
-
-        resp = req.post(
-            base,
-            headers={"Authorization": f"Bearer {AI_API_KEY}"},
-            json={
-                "model":    KIMI_MODEL,
-                "messages": [{"role": "user", "content": message}],
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"❌ Kimi error: {e}"
+    """Send message to Kimi CLI (`python kimi_cli.py`)."""
+    return _run_ai(["python", str(KIMI_CLI), message])
 
 
 # ── Telegram handler ──────────────────────────────────────────────────────────
