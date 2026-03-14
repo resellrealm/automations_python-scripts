@@ -1,0 +1,95 @@
+{
+  "name": "Bot Health Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 15 }]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "code": "// Check which bots are running via SSH or process list\n// This node runs a shell command on the VPS via Execute Command node\n// Returns status for each bot\nconst bots = [\n  { name: 'polymarket_flipper', grep: 'polymarket_flipper/main.py' },\n  { name: 'apprenticeship_applier', grep: 'apprenticeship_applier/main.py' },\n  { name: 'openclaw_bot', grep: 'telegram_messenger/bot.py' },\n];\nreturn bots.map(b => ({ json: b }));"
+      },
+      "id": "bot-list",
+      "name": "Define Bots to Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "command": "=ps aux | grep '{{ $json.grep }}' | grep -v grep | wc -l"
+      },
+      "id": "check-process",
+      "name": "Check Process Running",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "code": "// Merge process count back with bot info\nconst botInfo = $('Define Bots to Check').all()[$itemIndex].json;\nconst count = parseInt($input.first().json.stdout.trim()) || 0;\nreturn [{ json: { ...botInfo, running: count > 0, process_count: count } }];"
+      },
+      "id": "merge-status",
+      "name": "Parse Running Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ $json.running }}", "value2": false, "operation": "equal" }
+          ]
+        }
+      },
+      "id": "is-down",
+      "name": "Bot Down?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_USER_ID }}",
+        "text": "=⚠️ <b>Bot is DOWN</b>\n\n<code>{{ $json.name }}</code> is not running on the VPS.\n\nRestart command:\n<code>cd ~/python-scripts && nohup python {{ $json.grep }} >> logs/bot.log 2>&1 &</code>",
+        "additionalFields": { "parse_mode": "HTML" }
+      },
+      "id": "telegram-alert",
+      "name": "Telegram — Bot Down Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1340, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot-credentials",
+          "name": "OpenClaw Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": { "main": [[{ "node": "Define Bots to Check", "type": "main", "index": 0 }]] },
+    "Define Bots to Check": { "main": [[{ "node": "Check Process Running", "type": "main", "index": 0 }]] },
+    "Check Process Running": { "main": [[{ "node": "Parse Running Status", "type": "main", "index": 0 }]] },
+    "Parse Running Status": { "main": [[{ "node": "Bot Down?", "type": "main", "index": 0 }]] },
+    "Bot Down?": {
+      "main": [
+        [{ "node": "Telegram — Bot Down Alert", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "notes": "SETUP REQUIRED:\n1. Create 'OpenClaw Bot' Telegram credential (same bot token)\n2. Set n8n env var: TELEGRAM_USER_ID\n3. The 'Execute Command' node runs on the n8n host — make sure n8n runs ON the VPS where your bots run\n4. Activate the workflow\n\nNOTE: If n8n is NOT on the same VPS as your bots, replace 'Execute Command' with an SSH node pointing to your VPS."
+  }
+}

@@ -12,6 +12,7 @@ from config import (
 )
 import database as db
 import bankroll as br
+import trade_logger as tl
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,10 @@ def place_buy(
     )
 
     if dry_run:
-        return db.log_trade_open(strategy, market_id, token_id, "BUY", shares, price, reason)
+        tid = db.log_trade_open(strategy, market_id, token_id, "BUY", shares, price, reason)
+        if tid:
+            tl.log_open(tid, strategy, market_id, token_id, "BUY", shares, price, reason)
+        return tid
 
     client = _get_client()
     if not client:
@@ -109,7 +113,10 @@ def place_buy(
         act_price = filled / shares if shares else price
 
         logger.info(f"Order placed: {order_id} | filled=${filled:.4f}")
-        return db.log_trade_open(strategy, market_id, token_id, "BUY", shares, act_price, reason)
+        tid = db.log_trade_open(strategy, market_id, token_id, "BUY", shares, act_price, reason)
+        if tid:
+            tl.log_open(tid, strategy, market_id, token_id, "BUY", shares, act_price, reason)
+        return tid
 
     except Exception as e:
         logger.error(f"Order error: {e}")
@@ -141,6 +148,7 @@ def close_position(trade: dict, exit_price: float, dry_run: bool = False):
 
     db.log_trade_close(trade["id"], exit_price, net_pnl_usdc, GBP_TO_USDC)
     br.record_trade_result(net_pnl_gbp, won=won)
+    tl.log_close(trade["id"], trade.get("strategy", ""), exit_price, net_pnl_usdc, net_pnl_gbp, won)
 
     if br.is_stopped_today():
         logger.warning(

@@ -1,0 +1,173 @@
+{
+  "name": "Email Auto-Replier (Zoho + Kimi AI)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "host": "imap.zoho.com",
+        "port": 993,
+        "secure": true,
+        "credentials": {
+          "imap": {
+            "id": "zoho-imap-credentials",
+            "name": "Zoho IMAP"
+          }
+        },
+        "mailbox": "INBOX",
+        "limit": 10,
+        "downloadAttachments": false,
+        "options": {
+          "unseenOnly": true
+        }
+      },
+      "id": "imap-fetch",
+      "name": "Fetch Unread Emails",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.subject }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "check-not-empty",
+      "name": "Has Subject?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_API_URL }}/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.AI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "moonshot-v1-8k"
+            },
+            {
+              "name": "messages",
+              "value": "=[{\"role\":\"system\",\"content\":\"You are an email assistant for Nutrio+, a nutrition app. Read the email and decide: should you AUTO_REPLY or ESCALATE_TO_HUMAN? Auto-reply for general questions, feature inquiries, and support. Escalate for: refund requests, legal issues, angry complaints needing human empathy, or anything urgent. Respond with valid JSON: {\\\"action\\\": \\\"AUTO_REPLY\\\" or \\\"ESCALATE_TO_HUMAN\\\", \\\"reply_text\\\": \\\"...\\\", \\\"escalation_reason\\\": \\\"...\\\"}\"},{\"role\":\"user\",\"content\":\"From: {{ $json.from }}\\nSubject: {{ $json.subject }}\\n\\n{{ $json.text }}\"}]"
+            }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "id": "kimi-classify",
+      "name": "Kimi AI — Classify + Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "code": "// Parse Kimi's JSON response\nconst raw = $input.first().json.choices[0].message.content;\nlet parsed;\ntry {\n  // Extract JSON from response (may be wrapped in markdown)\n  const match = raw.match(/\\{[\\s\\S]*\\}/);\n  parsed = JSON.parse(match ? match[0] : raw);\n} catch(e) {\n  parsed = { action: 'ESCALATE_TO_HUMAN', reply_text: '', escalation_reason: 'Could not parse AI response: ' + raw };\n}\nreturn [{ json: { ...parsed, original_from: $('Fetch Unread Emails').first().json.from, original_subject: $('Fetch Unread Emails').first().json.subject } }];"
+      },
+      "id": "parse-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            { "conditions": { "string": [{ "value1": "={{ $json.action }}", "value2": "AUTO_REPLY", "operation": "equals" }] }, "outputIndex": 0 },
+            { "conditions": { "string": [{ "value1": "={{ $json.action }}", "value2": "ESCALATE_TO_HUMAN", "operation": "equals" }] }, "outputIndex": 1 }
+          ]
+        }
+      },
+      "id": "route-action",
+      "name": "Route: Reply or Escalate",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "support@nutrioplus.app",
+        "toEmail": "={{ $json.original_from }}",
+        "subject": "=Re: {{ $json.original_subject }}",
+        "emailType": "text",
+        "message": "={{ $json.reply_text }}\n\n---\nNutrio+ Support Team",
+        "options": {}
+      },
+      "id": "send-reply",
+      "name": "Send Auto-Reply",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1560, 200],
+      "credentials": {
+        "smtp": {
+          "id": "zoho-smtp-credentials",
+          "name": "Zoho SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_USER_ID }}",
+        "text": "=🚨 <b>Email needs your attention</b>\n\nFrom: {{ $json.original_from }}\nSubject: {{ $json.original_subject }}\n\nReason: {{ $json.escalation_reason }}",
+        "additionalFields": { "parse_mode": "HTML" }
+      },
+      "id": "telegram-escalate",
+      "name": "Telegram — Escalation Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1560, 400],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot-credentials",
+          "name": "OpenClaw Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": { "main": [[{ "node": "Fetch Unread Emails", "type": "main", "index": 0 }]] },
+    "Fetch Unread Emails": { "main": [[{ "node": "Has Subject?", "type": "main", "index": 0 }]] },
+    "Has Subject?": { "main": [[{ "node": "Kimi AI — Classify + Reply", "type": "main", "index": 0 }], []] },
+    "Kimi AI — Classify + Reply": { "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]] },
+    "Parse AI Response": { "main": [[{ "node": "Route: Reply or Escalate", "type": "main", "index": 0 }]] },
+    "Route: Reply or Escalate": {
+      "main": [
+        [{ "node": "Send Auto-Reply", "type": "main", "index": 0 }],
+        [{ "node": "Telegram — Escalation Alert", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "notes": "SETUP REQUIRED:\n1. Create 'Zoho IMAP' credential (IMAP, host=imap.zoho.com, port=993, SSL)\n2. Create 'Zoho SMTP' credential (SMTP, host=smtp.zoho.com, port=465, SSL)\n3. Create 'OpenClaw Bot' Telegram credential (bot token)\n4. Set n8n env vars: AI_API_URL, AI_API_KEY, TELEGRAM_USER_ID\n5. Activate the workflow"
+  }
+}
