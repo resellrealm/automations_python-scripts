@@ -30,26 +30,11 @@ from pathlib import Path
 BASE_DIR   = Path(__file__).parent.parent
 TASKS_FILE = Path(__file__).parent / "tasks.json"
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT  = os.getenv("TELEGRAM_USER_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
-
-
-# ── Telegram push (direct API call — no polling needed) ──────────────────────
+sys.path.insert(0, str(BASE_DIR))
+from telegram_push import notify, notify_task_start, notify_task_done, notify_task_failed
 
 def _push(message: str):
-    """Push a message directly to Telegram. Works even when bot isn't polling."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        print(f"[task_runner] Telegram not configured. Message: {message}")
-        return
-    try:
-        import requests
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT, "text": message, "parse_mode": "HTML"},
-            timeout=10,
-        )
-    except Exception as e:
-        print(f"[task_runner] Telegram push failed: {e}")
+    notify(message)
 
 
 # ── Task state persistence ────────────────────────────────────────────────────
@@ -94,17 +79,16 @@ def run_task(name: str, cmd: str, notify_done: bool = True):
         pid     = os.getpid(),
     )
 
-    _push(f"⏳ <b>Task started</b>: {name}\n<code>{cmd}</code>")
+    notify_task_start(name, cmd=cmd)
     print(f"[task_runner] Running: {cmd}")
+    t_start = time.time()
 
     try:
-        result = subprocess.run(
-            cmd, shell=True, cwd=BASE_DIR,
-            capture_output=True, text=True,
-        )
+        result   = subprocess.run(cmd, shell=True, cwd=BASE_DIR, capture_output=True, text=True)
         success  = result.returncode == 0
         finished = datetime.utcnow().isoformat()
-        output   = (result.stdout or result.stderr or "").strip()[-500:]  # last 500 chars
+        duration = time.time() - t_start
+        output   = (result.stdout or result.stderr or "").strip()[-500:]
 
         _set_status(task_id,
             status      = "done" if success else "failed",
@@ -114,21 +98,16 @@ def run_task(name: str, cmd: str, notify_done: bool = True):
         )
 
         if notify_done:
-            icon = "✅" if success else "❌"
-            status_word = "Complete" if success else "FAILED"
-            msg = (
-                f"{icon} <b>Task {status_word}</b>: {name}\n"
-                f"Exit code: {result.returncode}\n"
-            )
-            if output:
-                msg += f"\nLast output:\n<code>{output[-300:]}</code>"
-            _push(msg)
+            if success:
+                notify_task_done(name, output=output, duration_s=duration)
+            else:
+                notify_task_failed(name, error=output, exit_code=result.returncode)
 
         print(f"[task_runner] Done: {name} (exit {result.returncode})")
 
     except Exception as e:
         _set_status(task_id, status="failed", error=str(e), finished=datetime.utcnow().isoformat())
-        _push(f"❌ <b>Task crashed</b>: {name}\nError: {e}")
+        notify_task_failed(name, error=str(e))
         print(f"[task_runner] Error: {e}")
 
 

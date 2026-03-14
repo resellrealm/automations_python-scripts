@@ -9,13 +9,13 @@ Run on VPS:
 """
 
 import os
+import sys
 import time
 import signal
 import logging
 import subprocess
 from datetime import datetime
 from pathlib import Path
-import requests
 
 logging.basicConfig(
     level   = logging.INFO,
@@ -25,10 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger("heartbeat")
 
 PROJECT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT))
+from telegram_push import notify, notify_bot_crash, notify_bot_restarted
 
-# ── Config ─────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT  = os.getenv("TELEGRAM_CHAT_ID", "")
 CHECK_INTERVAL = 60      # seconds between checks
 IMPROVE_EVERY  = 3600    # run improvement cycle every 1 hour
 PUSH_EVERY     = 1800    # push to GitHub every 30 mins
@@ -47,16 +46,7 @@ _last_push    = 0
 
 
 def _telegram(msg: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "HTML"},
-            timeout=5,
-        )
-    except Exception:
-        pass
+    notify(msg)
 
 
 def start_bot(bot: dict) -> subprocess.Popen:
@@ -88,14 +78,14 @@ def check_bots():
             exit_code = proc.poll() if proc else "never started"
             if proc is not None:
                 logger.warning(f"{name} crashed (exit {exit_code}) — restarting...")
-                _telegram(f"⚠️ <b>{name}</b> crashed (exit {exit_code})\nRestarting now...")
+                notify_bot_crash(name, log_tail=f"Exit code: {exit_code}")
             else:
                 logger.info(f"Starting {name}...")
 
             new_proc = start_bot(bot)
             if new_proc:
                 _processes[name] = new_proc
-                _telegram(f"✅ <b>{name}</b> restarted (PID {new_proc.pid})")
+                notify_bot_restarted(name, pid=new_proc.pid)
         else:
             logger.debug(f"{name} running (PID {proc.pid})")
 
