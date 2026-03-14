@@ -325,6 +325,7 @@ def main():
     if args.balance:
         print(f"\n{br.status_line()}\n")
         print(br.growth_projection())
+        print(br.size_table())
         return
 
     if args.optimize:

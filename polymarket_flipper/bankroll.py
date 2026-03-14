@@ -31,7 +31,24 @@ RISK_PCT             = 0.10   # 10% of balance per trade
 MAX_OPEN_TRADES      = 3      # max simultaneous positions
 DAILY_LOSS_PCT       = 0.10   # stop day if down 10% of today's starting balance
 MIN_TRADE_GBP        = 2.00   # minimum meaningful trade
-MAX_TRADE_GBP        = 25.00  # hard ceiling even at large balance
+MAX_TRADE_GBP        = 25.00  # hard ceiling (hit at £250 balance)
+STEP_SIZE_GBP        = 5.0    # balance grows in £5 steps for trade sizing
+
+
+def _stepped_balance(balance: float) -> float:
+    """
+    Round balance DOWN to nearest £5 step.
+    This means trade size only increases every £5 of real growth.
+    Prevents micro-fluctuations from changing trade size every trade.
+
+    £30.00 → £30   (step 0)
+    £34.99 → £30   (still step 0 — not enough growth yet)
+    £35.00 → £35   (step 1 — trade size increases)
+    £39.99 → £35   (still step 1)
+    £40.00 → £40   (step 2 — increases again)
+    """
+    import math
+    return math.floor(balance / STEP_SIZE_GBP) * STEP_SIZE_GBP
 
 # Default multipliers — overridden by strategy_optimizer.py after real data builds up
 _DEFAULT_MULTIPLIERS = {
@@ -113,15 +130,46 @@ def is_stopped_today() -> bool:
 
 def trade_size_gbp(strategy: str = "NOBias") -> float:
     """
-    Standard trade size for directional / semi-guaranteed strategies.
-    Uses 10% of balance × live optimizer multiplier.
+    Standard trade size — increases every £5 of balance growth.
+    Uses stepped balance so size only moves when you've genuinely grown.
+
+    £30–34 → base £3.00  × multiplier
+    £35–39 → base £3.50  × multiplier  (+£0.50 step)
+    £40–44 → base £4.00  × multiplier  (+£0.50 step)
+    £50–54 → base £5.00  × multiplier  (+£0.50 step)
+    £100   → base £10.00 × multiplier
+    £250   → base £25.00 (hard ceiling)
     """
-    balance    = get_balance()
+    balance    = _stepped_balance(get_balance())
     base       = balance * RISK_PCT
     multiplier = _get_multiplier(strategy)
     size       = base * multiplier
     size       = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
     return round(size, 2)
+
+
+def size_table() -> str:
+    """
+    Print the full trade size table — every £5 balance step up to £500.
+    Shows exactly what the bot will trade at each balance level.
+    """
+    lines = [
+        f"\n{'Balance':>10} {'Base/trade':>12} {'Guaranteed 5%':>15} {'Guaranteed 10%':>16} {'Max exposure':>13}",
+        "-" * 70,
+    ]
+    balance = STARTING_BALANCE_GBP
+    while balance <= 500:
+        stepped  = _stepped_balance(balance)
+        base     = round(stepped * RISK_PCT, 2)
+        base     = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, base))
+        g5       = min(MAX_TRADE_GBP, round(max(MIN_TRADE_GBP, min(balance * 0.60, (0.15 + 0.05 * 3) * stepped)), 2))
+        g10      = min(MAX_TRADE_GBP, round(max(MIN_TRADE_GBP, min(balance * 0.60, (0.15 + 0.10 * 3) * stepped)), 2))
+        max_exp  = round(balance * 0.70, 2)
+        lines.append(
+            f"£{balance:>8.0f}   £{base:>10.2f}   £{g5:>13.2f}   £{g10:>14.2f}   £{max_exp:>11.2f}"
+        )
+        balance += 5
+    return "\n".join(lines)
 
 
 def guaranteed_size_gbp(profit_margin: float, n_legs: int = 1) -> float:
@@ -145,7 +193,7 @@ def guaranteed_size_gbp(profit_margin: float, n_legs: int = 1) -> float:
         profit_margin: locked net profit as decimal (e.g. 0.06 = 6%)
         n_legs:        number of legs (for multi-outcome, splits across legs)
     """
-    balance = get_balance()
+    balance = _stepped_balance(get_balance())   # steps every £5
 
     # Scale % of balance with the margin size
     # Formula: base 15% + (margin × 3), capped at 60%
