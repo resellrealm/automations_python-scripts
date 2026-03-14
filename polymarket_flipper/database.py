@@ -2,7 +2,7 @@
 SQLite tracker — trades, daily P&L, positions.
 """
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "flipper.db"
@@ -65,8 +65,23 @@ def get_daily(trade_date: str = None) -> dict:
         return {"trade_date": td, "trades": 0, "pnl_usdc": 0.0, "pnl_gbp": 0.0, "stopped": 0}
 
 
-def is_stopped_today() -> bool:
-    return bool(get_daily().get("stopped"))
+def count_today_trades() -> int:
+    """Count all trades opened today (open + closed). Used for daily cap enforcement."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) as n FROM trades WHERE trade_date = ?", (get_today(),)
+        ).fetchone()
+        return row["n"] if row else 0
+
+
+def get_stale_positions(max_hold_hours: int = 48) -> list:
+    """Return open positions that have been held longer than max_hold_hours."""
+    cutoff = (datetime.utcnow() - timedelta(hours=max_hold_hours)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM trades WHERE status = 'open' AND opened_at < ?", (cutoff,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def _ensure_daily(c, td):

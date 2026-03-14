@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from config import (
     PRIVATE_KEY, API_KEY, API_SECRET, API_PASSPHRASE,
     CLOB_API_URL, GBP_TO_USDC, MAX_OPEN_TRADES, TAKER_FEE,
+    MAX_TRADES_PER_DAY,
 )
 import database as db
 import bankroll as br
@@ -49,14 +50,15 @@ def _get_client():
         return None
 
 
-def calc_shares(price: float, strategy: str = "OBMismatch") -> float:
+def calc_shares(price: float, strategy: str = "OBMismatch", confidence: float = 1.0) -> float:
     """
     Calculate shares for current bankroll-sized trade at given price.
     Dynamic: scales with balance as bankroll grows.
+    Confidence (0–1) reduces size proportionally (floor 50%).
     """
     if price <= 0:
         return 0
-    usdc = br.trade_size_usdc(strategy, GBP_TO_USDC)
+    usdc = br.trade_size_usdc(strategy, GBP_TO_USDC, confidence=confidence)
     shares = usdc / price
     return round(shares, 2)
 
@@ -79,6 +81,14 @@ def place_buy(
         logger.warning("Daily loss limit reached — no new trades.")
         return None
 
+    if br.is_in_cooldown():
+        logger.warning("Post-loss cooldown active — no new trades.")
+        return None
+
+    if db.count_today_trades() >= MAX_TRADES_PER_DAY:
+        logger.info(f"Daily trade cap ({MAX_TRADES_PER_DAY}) reached — no new trades today.")
+        return None
+
     if db.count_open_trades() >= MAX_OPEN_TRADES:
         logger.debug(f"Max open trades ({MAX_OPEN_TRADES}) reached — skipping.")
         return None
@@ -87,7 +97,14 @@ def place_buy(
         return None
 
     cost_usdc  = round(price * shares, 4)
-    cost_gbp   = cost_usdc / GBP_TO_USDC
+    cost_gbp   = round(cost_usdc / GBP_TO_USDC, 2)
+
+    if not br.can_add_exposure(cost_gbp):
+        logger.warning(
+            f"Exposure limit — £{cost_gbp:.2f} would push total above "
+            f"70% of balance (currently £{br.get_open_exposure_gbp():.2f} open). Skipping."
+        )
+        return None
 
     logger.info(
         f"[{'DRY RUN' if dry_run else 'LIVE'}] BUY {shares:.2f} @ {price:.4f} "

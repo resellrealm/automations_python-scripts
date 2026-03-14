@@ -66,15 +66,17 @@ def _get_multiplier(strategy: str) -> float:
     """
     Load live multiplier from strategy_optimizer.
     Falls back to defaults if optimizer hasn't run yet.
-    Maps strategy names to groups.
+    Clamped to [MULTIPLIER_MIN, MULTIPLIER_MAX] to prevent runaway sizing.
     """
+    from config import MULTIPLIER_MIN, MULTIPLIER_MAX
     try:
         from strategy_optimizer import get_multipliers, STRATEGY_GROUPS
         mults = get_multipliers()
         group = STRATEGY_GROUPS.get(strategy, strategy)
-        return mults.get(group, _DEFAULT_MULTIPLIERS.get(strategy, 1.0))
+        raw = mults.get(group, _DEFAULT_MULTIPLIERS.get(strategy, 1.0))
     except Exception:
-        return _DEFAULT_MULTIPLIERS.get(strategy, 1.0)
+        raw = _DEFAULT_MULTIPLIERS.get(strategy, 1.0)
+    return max(MULTIPLIER_MIN, min(MULTIPLIER_MAX, raw))
 
 
 def _load() -> dict:
@@ -120,30 +122,26 @@ def get_day_start_balance() -> float:
     return _load()["day_start_balance"]
 
 
-def is_stopped_today() -> bool:
-    d = _load()
-    day_loss = d["day_pnl"]
-    if day_loss >= 0:
-        return False
-    return abs(day_loss) >= d["day_start_balance"] * DAILY_LOSS_PCT
-
-
-def trade_size_gbp(strategy: str = "NOBias") -> float:
+def trade_size_gbp(strategy: str = "NOBias", confidence: float = 1.0) -> float:
     """
     Standard trade size — increases every £5 of balance growth.
     Uses stepped balance so size only moves when you've genuinely grown.
+    Confidence (0–1) scales down size — low-confidence signals trade smaller.
 
-    £30–34 → base £3.00  × multiplier
-    £35–39 → base £3.50  × multiplier  (+£0.50 step)
-    £40–44 → base £4.00  × multiplier  (+£0.50 step)
-    £50–54 → base £5.00  × multiplier  (+£0.50 step)
-    £100   → base £10.00 × multiplier
+    £30–34 → base £3.00  × multiplier × confidence
+    £35–39 → base £3.50  × multiplier × confidence  (+£0.50 step)
+    £40–44 → base £4.00  × multiplier × confidence  (+£0.50 step)
+    £50–54 → base £5.00  × multiplier × confidence  (+£0.50 step)
+    £100   → base £10.00 × multiplier × confidence
     £250   → base £25.00 (hard ceiling)
+
+    Confidence floor at 0.5 — even 0% confidence doesn't go below half size.
     """
     balance    = _stepped_balance(get_balance())
     base       = balance * RISK_PCT
     multiplier = _get_multiplier(strategy)
-    size       = base * multiplier
+    conf_scale = max(0.5, min(1.0, confidence))
+    size       = base * multiplier * conf_scale
     size       = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
     return round(size, 2)
 
@@ -211,12 +209,85 @@ def guaranteed_size_gbp(profit_margin: float, n_legs: int = 1) -> float:
     return round(per_leg, 2)
 
 
+GBP_TO_USDC = 1.27  # module-level constant for external use
+
+
+def get_open_exposure_gbp() -> float:
+    """
+    Sum the cost (size × entry_price) of all currently open positions, in GBP.
+    Used to ensure total exposure stays within MAX_EXPOSURE_PCT of balance.
+    """
+    try:
+        import database as db
+        trades = db.get_open_trades()
+        total_usdc = sum(t.get("size", 0) * t.get("entry_price", 0) for t in trades)
+        return round(total_usdc / GBP_TO_USDC, 2)
+    except Exception:
+        return 0.0
+
+
+def can_add_exposure(new_size_gbp: float) -> bool:
+    """
+    True if adding new_size_gbp won't push total open exposure above MAX_EXPOSURE_PCT.
+    Always allows if current balance is too small to enforce meaningfully.
+    """
+    from config import MAX_EXPOSURE_PCT
+    balance  = get_balance()
+    current  = get_open_exposure_gbp()
+    cap      = balance * MAX_EXPOSURE_PCT
+    return (current + new_size_gbp) <= cap
+
+
+def is_stopped_today() -> bool:
+    d = _load()
+    day_loss = d["day_pnl"]
+    if day_loss >= 0:
+        return False
+    stopped = abs(day_loss) >= d["day_start_balance"] * DAILY_LOSS_PCT
+    if stopped:
+        _apply_cooldown(d)
+    return stopped
+
+
+def _apply_cooldown(d: dict):
+    """
+    When daily stop fires, set a cooldown_until timestamp if not already set.
+    Prevents re-entry even if P&L temporarily recovers above the stop threshold.
+    """
+    from datetime import timedelta
+    from config import COOLDOWN_MINUTES
+    if not d.get("cooldown_until"):
+        from datetime import datetime
+        until = (datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
+        d["cooldown_until"] = until
+        _save(d)
+
+
+def is_in_cooldown() -> bool:
+    """True if we're within the post-stop-loss cooldown window."""
+    from datetime import datetime
+    d = _load()
+    until_str = d.get("cooldown_until", "")
+    if not until_str:
+        return False
+    try:
+        until = datetime.fromisoformat(until_str)
+        if datetime.utcnow() < until:
+            return True
+        # Cooldown expired — clear it
+        d["cooldown_until"] = ""
+        _save(d)
+        return False
+    except Exception:
+        return False
+
+
 def guaranteed_size_usdc(profit_margin: float, n_legs: int = 1, gbp_rate: float = 1.27) -> float:
     return round(guaranteed_size_gbp(profit_margin, n_legs) * gbp_rate, 4)
 
 
-def trade_size_usdc(strategy: str = "OBMismatch", gbp_rate: float = 1.27) -> float:
-    return round(trade_size_gbp(strategy) * gbp_rate, 4)
+def trade_size_usdc(strategy: str = "OBMismatch", gbp_rate: float = 1.27, confidence: float = 1.0) -> float:
+    return round(trade_size_gbp(strategy, confidence) * gbp_rate, 4)
 
 
 def record_trade_result(pnl_gbp: float, won: bool):

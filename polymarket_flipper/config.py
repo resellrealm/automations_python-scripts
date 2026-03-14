@@ -17,7 +17,12 @@ GBP_TO_USDC           = float(os.getenv("GBP_TO_USDC", "1.27"))  # update via .e
 RISK_PCT_PER_TRADE    = 0.10   # 10% of balance per trade
 DAILY_LOSS_PCT        = 0.10   # stop day if down 10% of today's starting balance
 MAX_OPEN_TRADES       = 3      # max concurrent open positions
-TARGET_TRADES_PER_DAY = 8
+MAX_TRADES_PER_DAY    = 8      # hard daily cap — bot stops opening new trades after this
+MAX_HOLD_HOURS        = 48     # force-close any position held longer than this
+MAX_EXPOSURE_PCT      = 0.70   # total open position value never exceeds 70% of balance
+MULTIPLIER_MIN        = 0.5    # strategy optimizer multiplier lower bound
+MULTIPLIER_MAX        = 2.0    # strategy optimizer multiplier upper bound
+COOLDOWN_MINUTES      = 60     # pause after daily stop fires (prevents revenge trading)
 
 # ── API credentials ────────────────────────────────────────────────
 CLOB_API_URL   = os.getenv("CLOB_API_URL", "https://clob.polymarket.com")

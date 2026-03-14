@@ -27,7 +27,7 @@ from datetime import datetime
 
 from config import (
     GBP_TO_USDC,
-    POLL_INTERVAL_SECONDS, TARGET_TRADES_PER_DAY,
+    POLL_INTERVAL_SECONDS, MAX_TRADES_PER_DAY,
     ENABLE_FLASH_CRASH, ENABLE_NO_BIAS,
 )
 import database as db
@@ -261,7 +261,7 @@ def scan_no_bias(markets: list, dry_run: bool) -> int:
             continue
 
         no_entry = round(sig.no_mid + 0.01, 4)
-        shares   = calc_shares(no_entry, "NOBias")
+        shares   = calc_shares(no_entry, "NOBias", confidence=sig.confidence)
 
         logger.info(
             f"NO BIAS | {info.question[:65]} | "
@@ -289,11 +289,16 @@ def run_cycle(dry_run: bool) -> int:
         logger.warning("Daily loss limit hit — skipping cycle.")
         return 0
 
-    open_count = db.count_open_trades()
-    daily      = db.get_daily()
+    if br.is_in_cooldown():
+        logger.warning("Post-loss cooldown active — skipping cycle.")
+        return 0
+
+    open_count   = db.count_open_trades()
+    today_trades = db.count_today_trades()
+    exposure_gbp = br.get_open_exposure_gbp()
     logger.info(
-        f"Cycle | open={open_count} | trades_today={daily['trades']}/{TARGET_TRADES_PER_DAY} | "
-        f"{br.status_line()}"
+        f"Cycle | open={open_count} | trades_today={today_trades}/{MAX_TRADES_PER_DAY} | "
+        f"exposure=£{exposure_gbp:.2f} | {br.status_line()}"
     )
 
     resolve_open_positions(dry_run=dry_run)

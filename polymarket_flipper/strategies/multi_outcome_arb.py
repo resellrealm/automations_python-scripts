@@ -42,11 +42,18 @@ logger = logging.getLogger(__name__)
 GAMMA_URL = "https://gamma-api.polymarket.com"
 
 # Minimum profit after fees to enter
-MIN_NET_PROFIT_PCT = 0.02     # 2% net minimum (covers fees + slippage)
-MIN_VOLUME_PER_LEG = 1_000    # $1k min volume per outcome leg
-MIN_LEGS           = 3        # only multi-outcome (3+), not binary markets
-MAX_LEGS           = 20       # skip huge markets (hard to fill all legs)
-FEE_PER_LEG        = 0.005    # ~0.5% per leg (non-crypto estimate)
+MIN_NET_PROFIT_PCT  = 0.02     # 2% net minimum (covers fees + slippage)
+MIN_VOLUME_PER_LEG  = 1_000   # $1k min volume per outcome leg
+MIN_LEGS            = 3       # only multi-outcome (3+), not binary markets
+MAX_LEGS            = 20      # skip huge markets (hard to fill all legs)
+FEE_PER_LEG         = 0.005   # ~0.5% per leg (non-crypto)
+FEE_PER_LEG_CRYPTO  = 0.0315  # 3.15% per leg (crypto markets — much higher fee)
+
+# Keywords that indicate a crypto/price-based outcome leg
+CRYPTO_KEYWORDS = {
+    "btc", "bitcoin", "eth", "ethereum", "sol", "solana", "crypto",
+    "price", "above", "below", "will reach", "usd", "xrp", "bnb", "doge",
+}
 
 
 @dataclass
@@ -96,6 +103,16 @@ class MultiOutcomeArbDetector:
         except Exception as e:
             logger.error(f"Events fetch failed: {e}")
             return []
+
+    def _is_crypto_leg(self, mkt: dict) -> bool:
+        """Return True if this market leg appears to be a crypto/price outcome."""
+        text = " ".join([
+            mkt.get("groupItemTitle", ""),
+            mkt.get("question", ""),
+            mkt.get("category", ""),
+            mkt.get("market_slug", ""),
+        ]).lower()
+        return any(kw in text for kw in CRYPTO_KEYWORDS)
 
     def _parse_event(self, event: dict) -> Optional[MultiOutcomeSignal]:
         """
@@ -163,7 +180,11 @@ class MultiOutcomeArbDetector:
 
         yes_sum      = round(sum(l.yes_price for l in legs), 4)
         gross_profit = round(yes_sum - 1.00, 4)
-        total_fees   = round(len(legs) * FEE_PER_LEG, 4)
+        # Use per-leg fee based on whether each leg is crypto or non-crypto
+        total_fees   = round(sum(
+            (FEE_PER_LEG_CRYPTO if self._is_crypto_leg(mkt) else FEE_PER_LEG)
+            for mkt in markets[:len(legs)]
+        ), 4)
         net_profit   = round(gross_profit - total_fees, 4)
 
         if net_profit < MIN_NET_PROFIT_PCT:
