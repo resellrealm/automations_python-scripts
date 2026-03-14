@@ -128,6 +128,43 @@ def count_open_trades() -> int:
         return row["n"] if row else 0
 
 
+def get_strategy_stats(min_trades: int = 3) -> list:
+    """
+    Return per-strategy performance stats for closed trades.
+    Used by strategy_optimizer to reweight capital allocation.
+    Returns list of dicts sorted by actual EV descending.
+    """
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT
+                strategy,
+                COUNT(*)                                          AS total,
+                SUM(CASE WHEN pnl_usdc > 0 THEN 1 ELSE 0 END)   AS wins,
+                SUM(CASE WHEN pnl_usdc <= 0 THEN 1 ELSE 0 END)  AS losses,
+                AVG(CASE WHEN pnl_usdc > 0 THEN pnl_usdc END)   AS avg_win_usdc,
+                AVG(CASE WHEN pnl_usdc <= 0 THEN pnl_usdc END)  AS avg_loss_usdc,
+                SUM(pnl_usdc)                                    AS total_pnl,
+                AVG(pnl_usdc)                                    AS avg_pnl
+            FROM trades
+            WHERE status = 'closed' AND pnl_usdc IS NOT NULL
+            GROUP BY strategy
+            HAVING COUNT(*) >= ?
+            ORDER BY avg_pnl DESC
+        """, (min_trades,)).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            total = d["total"] or 1
+            wins  = d["wins"]  or 0
+            d["win_rate"]  = round(wins / total, 4)
+            d["loss_rate"] = round(1 - wins / total, 4)
+            d["avg_win"]   = d["avg_win_usdc"]  or 0.0
+            d["avg_loss"]  = abs(d["avg_loss_usdc"] or 0.0)
+            d["ev"]        = round((d["win_rate"] * d["avg_win"]) - (d["loss_rate"] * d["avg_loss"]), 4)
+            result.append(d)
+        return result
+
+
 def get_open_trades() -> list:
     with _conn() as c:
         rows = c.execute(

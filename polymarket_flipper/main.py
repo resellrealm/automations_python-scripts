@@ -31,6 +31,7 @@ from config import (
 )
 import database as db
 import bankroll as br
+import strategy_optimizer as optimizer
 from market_feed import (
     fetch_all_markets, fetch_crypto_15min_markets,
     market_to_tokens, fetch_orderbook, build_token_info, seconds_to_close,
@@ -274,6 +275,9 @@ def run_cycle(dry_run: bool) -> int:
 
     resolve_open_positions(dry_run=dry_run)
 
+    # Auto-rebalance strategy sizing based on real performance
+    optimizer.rebalance()
+
     # Fetch all markets ONCE — shared by binary strategies
     all_markets = fetch_all_markets(limit=200)
 
@@ -295,6 +299,7 @@ def main():
     parser.add_argument("--dry-run",  action="store_true", help="Simulate only")
     parser.add_argument("--report",   action="store_true", help="Print 30-day P&L")
     parser.add_argument("--balance",  action="store_true", help="Show bankroll + projection")
+    parser.add_argument("--optimize", action="store_true", help="Show strategy performance + live multipliers")
     parser.add_argument("--once",     action="store_true", help="One cycle then exit")
     args = parser.parse_args()
 
@@ -307,6 +312,10 @@ def main():
     if args.balance:
         print(f"\n{br.status_line()}\n")
         print(br.growth_projection())
+        return
+
+    if args.optimize:
+        print(optimizer.strategy_report())
         return
 
     mode = "DRY RUN" if args.dry_run else "LIVE"

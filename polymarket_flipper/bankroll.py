@@ -33,13 +33,31 @@ DAILY_LOSS_PCT       = 0.10   # stop day if down 10% of today's starting balance
 MIN_TRADE_GBP        = 2.00   # minimum meaningful trade
 MAX_TRADE_GBP        = 25.00  # hard ceiling even at large balance
 
-# Strategy multipliers (relative to base risk)
-STRATEGY_MULTIPLIERS = {
-    "FlashCrash":    1.5,   # highest conviction — locked profit
-    "FlashCrash_NO": 1.5,
-    "OBMismatch":    1.0,
-    "NOBias":        0.8,   # lowest conviction
+# Default multipliers — overridden by strategy_optimizer.py after real data builds up
+_DEFAULT_MULTIPLIERS = {
+    "MultiOutcomeArb": 1.5,
+    "BundleArb":       1.0,
+    "BundleArb_NO":    1.0,
+    "ResolutionLag":   1.0,
+    "NOBias":          1.2,
+    "FlashCrash":      1.0,
+    "FlashCrash_NO":   1.0,
 }
+
+
+def _get_multiplier(strategy: str) -> float:
+    """
+    Load live multiplier from strategy_optimizer.
+    Falls back to defaults if optimizer hasn't run yet.
+    Maps strategy names to groups.
+    """
+    try:
+        from strategy_optimizer import get_multipliers, STRATEGY_GROUPS
+        mults = get_multipliers()
+        group = STRATEGY_GROUPS.get(strategy, strategy)
+        return mults.get(group, _DEFAULT_MULTIPLIERS.get(strategy, 1.0))
+    except Exception:
+        return _DEFAULT_MULTIPLIERS.get(strategy, 1.0)
 
 
 def _load() -> dict:
@@ -93,16 +111,20 @@ def is_stopped_today() -> bool:
     return abs(day_loss) >= d["day_start_balance"] * DAILY_LOSS_PCT
 
 
-def trade_size_gbp(strategy: str = "OBMismatch") -> float:
+def trade_size_gbp(strategy: str = "NOBias") -> float:
     """
-    Calculate optimal trade size for current balance.
-    Scales with balance, applies strategy multiplier.
+    Calculate trade size for current balance + live strategy multiplier.
+    Multiplier shifts automatically as the optimizer learns what's working.
+
+    £30 balance examples (after enough trades to rebalance):
+      NOBias winning    → multiplier 2.4x → £7.20/trade
+      BundleArb losing  → multiplier 0.3x → £0.90/trade
     """
-    balance = get_balance()
-    base = balance * RISK_PCT
-    multiplier = STRATEGY_MULTIPLIERS.get(strategy, 1.0)
-    size = base * multiplier
-    size = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
+    balance    = get_balance()
+    base       = balance * RISK_PCT
+    multiplier = _get_multiplier(strategy)
+    size       = base * multiplier
+    size       = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
     return round(size, 2)
 
 
