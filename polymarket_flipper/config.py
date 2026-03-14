@@ -28,41 +28,35 @@ API_SECRET     = os.getenv("POLYMARKET_API_SECRET", "")
 API_PASSPHRASE = os.getenv("POLYMARKET_API_PASSPHRASE", "")
 
 # ── Strategy toggles ───────────────────────────────────────────────
-ENABLE_FLASH_CRASH = True
-ENABLE_ORDERBOOK   = True
+ENABLE_FLASH_CRASH = True    # now handled by bundle_arb.py
 ENABLE_NO_BIAS     = True
 
-# ── Flash crash params ─────────────────────────────────────────────
-FLASH_CRASH_THRESHOLD_PCT = 12.0   # % YES drop (lowered from 15 → more signals)
-FLASH_BUNDLE_MAX          = 0.95   # bundle ≤ this = locked profit
-FLASH_MIN_YES             = 0.05
-FLASH_MAX_YES             = 0.90
-FLASH_MIN_VOLUME          = 10_000  # $10k min volume (avoid thin markets)
-FLASH_COOLDOWN_SECONDS    = 300     # don't re-enter same market within 5 min
+# ── Bundle arb params ──────────────────────────────────────────────
+BUNDLE_MAX_NON_CRYPTO = 0.97  # enter when bundle ≤ 0.97 on non-crypto (0% fee)
+BUNDLE_MAX_CRYPTO     = 0.93  # enter when bundle ≤ 0.93 on crypto (up to 3.15% fee)
+BUNDLE_MIN_VOLUME     = 5_000
+BUNDLE_MIN_LIQUIDITY  = 1_000
 
-# ── Orderbook mismatch params ──────────────────────────────────────
-OB_MIN_EDGE           = 0.025  # ≥2.5¢ net edge after fee (was 3¢)
-OB_IMBALANCE_RATIO    = 2.0    # lowered from 2.5x → more signals
-OB_SECONDS_MIN        = 5
-OB_SECONDS_MAX        = 600    # widened to 10 min (was 5 min)
-OB_MIN_VOLUME         = 5_000
+# ── Resolution lag params ──────────────────────────────────────────
+LAG_MIN_WIN_PRICE      = 0.88  # only enter when winner is ≥88¢
+LAG_MAX_WIN_PRICE      = 0.99
+LAG_MIN_OVERDUE_MINS   = 5
+LAG_MAX_OVERDUE_HOURS  = 48
+LAG_MIN_VOLUME         = 1_000
 
 # ── NO bias params ─────────────────────────────────────────────────
 NO_MIN_PRICE     = 0.55
 NO_MAX_PRICE     = 0.85
-NO_MIN_VOLUME    = 2_000   # lowered from $5k → more signals at small balance
-NO_MIN_LIQUIDITY = 1_000   # lowered from $2k
+NO_MIN_VOLUME    = 2_000
+NO_MIN_LIQUIDITY = 1_000
 NO_AVOID_HOURS   = 24
 NO_SKIP_KEYWORDS = [
     "btc", "bitcoin", "eth", "ethereum", "sol", "solana",
     "crypto", "price", "above", "below", "will reach",
 ]
 
-# ── Minimum edge filter (applies to all strategies) ───────────────
-MIN_NET_EDGE = 0.025   # skip any trade with <2.5% net edge
-
-# ── Polling ────────────────────────────────────────────────────────
-POLL_INTERVAL_SECONDS = 30
+# ── Polling — every 15s (opportunities last avg 2.7s, we catch slower ones)
+POLL_INTERVAL_SECONDS = 15
 
 # ── Taker fee ──────────────────────────────────────────────────────
-TAKER_FEE = 0.0315  # 3.15% Polymarket taker fee
+TAKER_FEE = 0.0315  # 3.15% worst case (crypto markets at 50% price point)
