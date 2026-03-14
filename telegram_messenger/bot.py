@@ -19,15 +19,19 @@ Run on VPS:
     nohup python telegram_messenger/bot.py >> openclaw.log 2>&1 &
 """
 
+import asyncio
 import json
 import logging
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID
+
+_executor = ThreadPoolExecutor(max_workers=4)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -221,33 +225,41 @@ def _polymarket_balance() -> str:
 KIMI_CLI = PROJECT / "kimi_cli.py"
 
 
-def _run_ai(cmd: list, timeout: int = 120) -> str:
-    """Run an AI CLI command, return its stdout."""
+def _run_ai(cmd: list, timeout: int = 90) -> str:
+    """Run an AI CLI command in a thread (blocking-safe). Returns stdout."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
             timeout=timeout, cwd=str(PROJECT),
         )
-        response = result.stdout.strip()
-        if not response and result.stderr:
-            response = result.stderr.strip()
-        return response or "(empty response)"
+        out = result.stdout.strip()
+        if not out and result.stderr:
+            out = result.stderr.strip()
+        return out or "(empty response)"
     except subprocess.TimeoutExpired:
-        return f"❌ Timed out ({timeout}s)."
+        return f"❌ Timed out after {timeout}s — try a shorter question."
     except FileNotFoundError:
-        return f"❌ Command not found: {cmd[0]}"
+        return f"❌ Not found: {cmd[0]}"
     except Exception as e:
         return f"❌ Error: {e}"
 
 
 def ask_claude(message: str) -> str:
-    """Send message to Claude CLI (`claude -p`)."""
     return _run_ai(["claude", "-p", message, "--output-format", "text"])
 
 
 def ask_kimi(message: str) -> str:
-    """Send message to Kimi CLI (`python kimi_cli.py`)."""
     return _run_ai(["python", str(KIMI_CLI), message])
+
+
+async def _ask_claude_async(message: str) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, ask_claude, message)
+
+
+async def _ask_kimi_async(message: str) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, ask_kimi, message)
 
 
 # ── Telegram handler ──────────────────────────────────────────────────────────
@@ -328,23 +340,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html("🛑 <b>All trading bots stopped.</b>")
         return
 
-    # ── Claude → Kimi review chain ────────────────────────────
+    # ── Claude → Kimi review chain (async, non-blocking) ─────
     logger.info(f"→ Claude: {text[:80]}")
-    await update.message.reply_text("⏳ Asking Claude...")
-    claude_reply = ask_claude(text)
+    status_msg = await update.message.reply_text("⏳ Claude thinking...")
 
-    logger.info(f"→ Kimi reviewing Claude response...")
-    await update.message.reply_text("🔍 Kimi reviewing...")
-    kimi_review = ask_kimi(
+    # Run Claude in background thread — bot stays alive while waiting
+    claude_task = asyncio.create_task(_ask_claude_async(text))
+
+    # Ping "still working" every 20s so user knows it's alive
+    elapsed = 0
+    while not claude_task.done():
+        await asyncio.sleep(5)
+        elapsed += 5
+        if elapsed % 20 == 0:
+            try:
+                await status_msg.edit_text(f"⏳ Claude thinking... ({elapsed}s)")
+            except Exception:
+                pass
+
+    claude_reply = claude_task.result()
+    logger.info(f"Claude done. Now Kimi reviewing...")
+
+    try:
+        await status_msg.edit_text("🔍 Kimi reviewing Claude's answer...")
+    except Exception:
+        pass
+
+    kimi_review = await _ask_kimi_async(
         f"The user asked: {text}\n\n"
         f"Claude answered:\n{claude_reply}\n\n"
-        f"Review Claude's answer. If it's correct and complete, just say it and restate it clearly. "
-        f"If anything is wrong, incomplete or can be improved, fix it. Be concise."
+        f"Review Claude's answer. If it's correct and complete, restate it clearly. "
+        f"If anything is wrong or can be improved, fix it. Be concise."
     )
 
-    response = kimi_review
+    # Delete the status message, send the final answer
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
 
-    # Split long responses (Telegram 4096 char limit)
+    response = kimi_review
     for i in range(0, max(len(response), 1), 4096):
         await update.message.reply_text(response[i:i + 4096])
 
