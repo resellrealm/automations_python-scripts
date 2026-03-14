@@ -27,11 +27,11 @@ from typing import Optional
 _STATE_FILE = Path(__file__).parent / "bankroll.json"
 
 STARTING_BALANCE_GBP = 30.0
-RISK_PCT             = 0.10   # 10% of balance per trade
-MAX_OPEN_TRADES      = 3      # max simultaneous positions
+RISK_PCT             = 0.025  # 2.5% of balance per trade → ~£0.75 at £30
+MAX_OPEN_TRADES      = 6      # max simultaneous positions
 DAILY_LOSS_PCT       = 0.10   # stop day if down 10% of today's starting balance
-MIN_TRADE_GBP        = 2.00   # minimum meaningful trade
-MAX_TRADE_GBP        = 25.00  # hard ceiling (hit at £250 balance)
+MIN_TRADE_GBP        = 0.50   # sub-£1 micro trades
+MAX_TRADE_GBP        = 1.00   # hard ceiling — £1 max per trade
 STEP_SIZE_GBP        = 5.0    # balance grows in £5 steps for trade sizing
 
 
@@ -52,13 +52,15 @@ def _stepped_balance(balance: float) -> float:
 
 # Default multipliers — overridden by strategy_optimizer.py after real data builds up
 _DEFAULT_MULTIPLIERS = {
-    "MultiOutcomeArb": 1.5,
-    "BundleArb":       1.0,
-    "BundleArb_NO":    1.0,
-    "ResolutionLag":   1.0,
-    "NOBias":          0.8,
-    "FlashCrash":      1.0,
-    "FlashCrash_NO":   1.0,
+    "MultiOutcomeArb":  1.5,
+    "BundleArb":        1.0,
+    "BundleArb_NO":     1.0,
+    "ResolutionLag":    1.0,
+    "NOBias":           0.8,
+    "FlashCrash":       1.0,
+    "FlashCrash_NO":    1.0,
+    "CryptoMomentum":   1.0,   # 5m/15m crypto Up/Down markets
+    "WhaleConsensus":   1.2,   # whale copy trades — slight size boost for strong consensus
 }
 
 
@@ -135,14 +137,25 @@ def trade_size_gbp(strategy: str = "NOBias", confidence: float = 1.0) -> float:
     £100   → base £10.00 × multiplier × confidence
     £250   → base £25.00 (hard ceiling)
 
-    Confidence floor at 0.5 — even 0% confidence doesn't go below half size.
+    Confidence tiers:
+      conf < 0.45 → £0.50 (minimum micro trade)
+      conf 0.45–0.60 → £0.60
+      conf 0.60–0.75 → £0.75
+      conf 0.75–0.90 → £0.90
+      conf > 0.90 → full size (1.0×)
+
+    Confidence floor at 0.3 — very low confidence still fires a micro trade.
     """
     balance    = _stepped_balance(get_balance())
     base       = balance * RISK_PCT
     multiplier = _get_multiplier(strategy)
-    conf_scale = max(0.5, min(1.0, confidence))
-    size       = base * multiplier * conf_scale
-    size       = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
+
+    # Confidence tiers: (min_confidence, scale_factor)
+    _CONF_TIERS = ((0.90, 1.00), (0.75, 0.80), (0.60, 0.65), (0.45, 0.50))
+    conf_scale  = next((s for t, s in _CONF_TIERS if confidence >= t), 0.35)
+
+    size = base * multiplier * conf_scale
+    size = max(MIN_TRADE_GBP, min(MAX_TRADE_GBP, size))
     return round(size, 2)
 
 
@@ -228,14 +241,16 @@ def get_open_exposure_gbp() -> float:
 
 def can_add_exposure(new_size_gbp: float) -> bool:
     """
-    True if adding new_size_gbp won't push total open exposure above MAX_EXPOSURE_PCT.
-    Always allows if current balance is too small to enforce meaningfully.
+    True if adding new_size_gbp won't push total open exposure above:
+      - Hard £15 cap (MAX_EXPOSURE_GBP), AND
+      - 70% of current balance (MAX_EXPOSURE_PCT)
     """
-    from config import MAX_EXPOSURE_PCT
+    from config import MAX_EXPOSURE_PCT, MAX_EXPOSURE_GBP
     balance  = get_balance()
     current  = get_open_exposure_gbp()
-    cap      = balance * MAX_EXPOSURE_PCT
-    return (current + new_size_gbp) <= cap
+    pct_cap  = balance * MAX_EXPOSURE_PCT
+    hard_cap = MAX_EXPOSURE_GBP
+    return (current + new_size_gbp) <= min(pct_cap, hard_cap)
 
 
 def is_stopped_today() -> bool:

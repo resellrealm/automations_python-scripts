@@ -16,10 +16,11 @@ GBP_TO_USDC           = float(os.getenv("GBP_TO_USDC", "1.27"))  # update via .e
 # ── Risk rules (% of balance) ──────────────────────────────────────
 RISK_PCT_PER_TRADE    = 0.10   # 10% of balance per trade
 DAILY_LOSS_PCT        = 0.10   # stop day if down 10% of today's starting balance
-MAX_OPEN_TRADES       = 3      # max concurrent open positions
-MAX_TRADES_PER_DAY    = 8      # hard daily cap — bot stops opening new trades after this
+MAX_OPEN_TRADES       = 6      # max concurrent open positions
+MAX_TRADES_PER_DAY    = 30     # hard daily cap — micro sizing means more trades per day
 MAX_HOLD_HOURS        = 48     # force-close any position held longer than this
 MAX_EXPOSURE_PCT      = 0.70   # total open position value never exceeds 70% of balance
+MAX_EXPOSURE_GBP      = 15.00  # hard £15 cap on total open positions at any time
 MULTIPLIER_MIN        = 0.5    # strategy optimizer multiplier lower bound
 MULTIPLIER_MAX        = 2.0    # strategy optimizer multiplier upper bound
 COOLDOWN_MINUTES      = 60     # pause after daily stop fires (prevents revenge trading)

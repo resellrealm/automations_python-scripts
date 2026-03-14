@@ -43,6 +43,8 @@ from strategies.bundle_arb import BundleArbDetector
 from strategies.resolution_lag import ResolutionLagDetector
 from strategies.no_bias import NOBiasDetector
 from strategies.multi_outcome_arb import MultiOutcomeArbDetector
+from strategies.crypto_momentum import CryptoMomentumDetector
+from strategies.whale_consensus import WhaleConsensusDetector
 
 logging.basicConfig(
     level    = logging.INFO,
@@ -51,10 +53,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-bundle_detector = BundleArbDetector()
-lag_detector    = ResolutionLagDetector()
-no_detector     = NOBiasDetector()
-multi_detector  = MultiOutcomeArbDetector()
+bundle_detector  = BundleArbDetector()
+lag_detector     = ResolutionLagDetector()
+no_detector      = NOBiasDetector()
+multi_detector   = MultiOutcomeArbDetector()
+crypto_detector  = CryptoMomentumDetector()
+whale_detector   = WhaleConsensusDetector()
 
 _running = True
 
@@ -125,15 +129,12 @@ def scan_multi_outcome(dry_run: bool) -> int:
 
 # ── Strategy 1: Bundle Arb ─────────────────────────────────────────────────
 
-def scan_bundle_arb(markets: list, dry_run: bool) -> int:
+def _build_pairs(markets: list) -> dict:
     """
-    Scan ALL markets for YES+NO bundle < $1.00 after fees.
-    Guaranteed profit — no prediction needed.
-    Highest priority, gets 1.5x sizing.
+    Fetch orderbooks once and build market_id → {YES: TokenInfo, NO: TokenInfo}.
+    Shared by scan_bundle_arb and scan_crypto_momentum to avoid duplicate API calls.
     """
-    trades = 0
-    pairs = defaultdict(dict)   # market_id → {YES: TokenInfo, NO: TokenInfo}
-
+    pairs = defaultdict(dict)
     for market in markets:
         for tok in market_to_tokens(market):
             if not tok["token_id"]:
@@ -141,6 +142,19 @@ def scan_bundle_arb(markets: list, dry_run: bool) -> int:
             book = fetch_orderbook(tok["token_id"])
             info = build_token_info(market, tok, book)
             pairs[info.market_id][info.outcome.upper()] = info
+    return pairs
+
+
+def scan_bundle_arb(markets: list, dry_run: bool, pairs: dict = None) -> int:
+    """
+    Scan ALL markets for YES+NO bundle < $1.00 after fees.
+    Guaranteed profit — no prediction needed.
+    Highest priority, gets 1.5x sizing.
+    Accepts pre-built pairs dict to avoid duplicate orderbook fetches.
+    """
+    trades = 0
+    if pairs is None:
+        pairs = _build_pairs(markets)
 
     for market_id, pair in pairs.items():
         yes_tok = pair.get("YES")
@@ -282,6 +296,121 @@ def scan_no_bias(markets: list, dry_run: bool) -> int:
     return trades
 
 
+# ── Strategy 4: Crypto 5-min / 15-min Momentum ────────────────────────────
+
+def scan_crypto_momentum(markets: list, dry_run: bool, pairs: dict = None) -> int:
+    """
+    Scan 5-minute and 15-minute crypto Up/Down markets for:
+      - Bundle arb: YES + NO < $0.97 → guaranteed profit
+      - Momentum drift: YES > 0.56 or < 0.44 → follow the crowd
+
+    Coins: BTC, ETH, SOL, XRP (15-min) + DOGE, BNB, HYPE (5-min only)
+    Accepts pre-built pairs dict to avoid duplicate orderbook fetches.
+    """
+    trades = 0
+    if pairs is None:
+        # Pre-filter to only crypto markets before fetching orderbooks
+        crypto_keywords = ("5-minute", "15-minute", "5 minute", "15 minute",
+                           "5min", "15min", "up or down")
+        crypto_markets  = [
+            m for m in markets
+            if any(kw in m.get("question", "").lower() for kw in crypto_keywords)
+        ]
+        pairs = _build_pairs(crypto_markets)
+
+    for market_id, pair in pairs.items():
+        yes_tok = pair.get("YES")
+        no_tok  = pair.get("NO")
+        if not yes_tok or not no_tok:
+            continue
+
+        sig = crypto_detector.evaluate_pair(yes_tok, no_tok)
+        if not sig:
+            continue
+
+        size_gbp = br.trade_size_gbp("CryptoMomentum", confidence=sig.confidence)
+
+        logger.info(
+            f"CRYPTO {sig.signal_type.upper()} | {sig.coin} {sig.timeframe} | "
+            f"{sig.direction} @ YES={sig.yes_price:.3f} NO={sig.no_price:.3f} | "
+            f"conf={sig.confidence:.2f} | £{size_gbp:.2f} | {sig.reason[:80]}"
+        )
+
+        if sig.direction in ("YES", "BOTH"):
+            shares = round(size_gbp * GBP_TO_USDC / yes_tok.best_ask, 2)
+            tid = place_buy(
+                token_id  = yes_tok.token_id,
+                price     = yes_tok.best_ask,
+                shares    = shares,
+                strategy  = "CryptoMomentum",
+                market_id = market_id,
+                reason    = sig.reason[:80],
+                dry_run   = dry_run,
+            )
+            if tid:
+                trades += 1
+
+        if sig.direction in ("NO", "BOTH"):
+            shares = round(size_gbp * GBP_TO_USDC / no_tok.best_ask, 2)
+            tid = place_buy(
+                token_id  = no_tok.token_id,
+                price     = no_tok.best_ask,
+                shares    = shares,
+                strategy  = "CryptoMomentum",
+                market_id = market_id,
+                reason    = sig.reason[:80],
+                dry_run   = dry_run,
+            )
+            if tid:
+                trades += 1
+
+    return trades
+
+
+# ── Strategy 5: Whale Consensus ───────────────────────────────────────────
+
+def scan_whale_consensus(dry_run: bool) -> int:
+    """
+    Monitor 5 known sharp wallets. When 2+ bet the same side on the
+    same market within the last 5 minutes, mirror the trade.
+
+    Confidence scales with agreement:
+      2/5 → 0.60 → £0.75
+      3/5 → 0.75 → £0.90
+      4/5 → 0.90 → £1.00
+      5/5 → 1.00 → £1.00
+    """
+    trades  = 0
+    signals = whale_detector.scan()
+
+    for sig in signals:
+        if not sig.token_id or not sig.market_id:
+            continue
+
+        size_gbp = br.trade_size_gbp("WhaleConsensus", confidence=sig.confidence)
+
+        logger.warning(
+            f"WHALE CONSENSUS | {sig.n_agree}/5 wallets | "
+            f"{sig.side} | {sig.question[:60]} | "
+            f"price={sig.price:.3f} | conf={sig.confidence:.2f} | £{size_gbp:.2f}"
+        )
+
+        shares = round(size_gbp * GBP_TO_USDC / max(sig.price, 0.01), 2)
+        tid = place_buy(
+            token_id  = sig.token_id,
+            price     = sig.price,
+            shares    = shares,
+            strategy  = "WhaleConsensus",
+            market_id = sig.market_id,
+            reason    = sig.reason[:200],
+            dry_run   = dry_run,
+        )
+        if tid:
+            trades += 1
+
+    return trades
+
+
 # ── Main cycle ─────────────────────────────────────────────────────────────
 
 def run_cycle(dry_run: bool) -> int:
@@ -298,22 +427,32 @@ def run_cycle(dry_run: bool) -> int:
     exposure_gbp = br.get_open_exposure_gbp()
     logger.info(
         f"Cycle | open={open_count} | trades_today={today_trades}/{MAX_TRADES_PER_DAY} | "
-        f"exposure=£{exposure_gbp:.2f} | {br.status_line()}"
+        f"exposure=£{exposure_gbp:.2f}/£15.00 | {br.status_line()}"
     )
+
+    if not br.can_add_exposure(0):
+        logger.warning("Max exposure £15.00 reached — skipping new trades this cycle.")
+        resolve_open_positions(dry_run=dry_run)
+        return 0
 
     resolve_open_positions(dry_run=dry_run)
 
     # Auto-rebalance strategy sizing based on real performance
     optimizer.rebalance()
 
-    # Fetch all markets ONCE — shared by binary strategies
+    # Fetch all markets ONCE — shared by all strategies
     all_markets = fetch_all_markets(limit=200)
 
+    # Build pairs ONCE — orderbooks fetched here, reused by bundle_arb + crypto_momentum
+    all_pairs = _build_pairs(all_markets)
+
     total  = 0
-    total += scan_multi_outcome(dry_run)                # Strategy 0 — GUARANTEED (multi-leg)
-    total += scan_bundle_arb(all_markets, dry_run)      # Strategy 1 — GUARANTEED (binary)
-    total += scan_resolution_lag(all_markets, dry_run)  # Strategy 2 — semi-guaranteed
-    total += scan_no_bias(all_markets, dry_run)         # Strategy 3 — directional
+    total += scan_multi_outcome(dry_run)                         # Strategy 0 — GUARANTEED (multi-leg)
+    total += scan_bundle_arb(all_markets, dry_run, all_pairs)    # Strategy 1 — GUARANTEED (binary)
+    total += scan_resolution_lag(all_markets, dry_run)           # Strategy 2 — semi-guaranteed
+    total += scan_no_bias(all_markets, dry_run)                  # Strategy 3 — directional
+    total += scan_crypto_momentum(all_markets, dry_run, all_pairs)  # Strategy 4 — 5m/15m crypto
+    total += scan_whale_consensus(dry_run)                          # Strategy 5 — whale copy
 
     db.snapshot_balance(br.get_balance(), note=f"cycle trades={total}")
     logger.info(f"Cycle done | new trades={total} | {br.status_line()}")
