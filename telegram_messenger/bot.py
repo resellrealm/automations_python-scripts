@@ -328,18 +328,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html("🛑 <b>All trading bots stopped.</b>")
         return
 
-    # ── /kimi → Kimi AI ──────────────────────────────────────
-    if text.lower().startswith("/kimi"):
-        query = text[5:].strip() or "hello"
-        logger.info(f"→ Kimi: {query[:80]}")
-        await update.message.reply_text("⏳ Asking Kimi...")
-        response = ask_kimi(query)
+    # ── Claude → Kimi review chain ────────────────────────────
+    logger.info(f"→ Claude: {text[:80]}")
+    await update.message.reply_text("⏳ Asking Claude...")
+    claude_reply = ask_claude(text)
 
-    # ── Everything else → Claude CLI ─────────────────────────
-    else:
-        logger.info(f"→ Claude: {text[:80]}")
-        await update.message.reply_text("⏳ Asking Claude...")
-        response = ask_claude(text)
+    logger.info(f"→ Kimi reviewing Claude response...")
+    await update.message.reply_text("🔍 Kimi reviewing...")
+    kimi_review = ask_kimi(
+        f"The user asked: {text}\n\n"
+        f"Claude answered:\n{claude_reply}\n\n"
+        f"Review Claude's answer. If it's correct and complete, just say it and restate it clearly. "
+        f"If anything is wrong, incomplete or can be improved, fix it. Be concise."
+    )
+
+    response = kimi_review
 
     # Split long responses (Telegram 4096 char limit)
     for i in range(0, max(len(response), 1), 4096):
