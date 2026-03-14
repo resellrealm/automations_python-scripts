@@ -92,7 +92,7 @@ def scan_multi_outcome(dry_run: bool) -> int:
             f"£{size_gbp:.2f}/leg × {sig.n_legs} legs = £{size_gbp*sig.n_legs:.2f} total"
         )
 
-        legs_placed = 0
+        placed_ids = []
         for leg in sig.legs:
             if not leg.no_token_id:
                 continue
@@ -109,10 +109,15 @@ def scan_multi_outcome(dry_run: bool) -> int:
                 dry_run   = dry_run,
             )
             if tid:
-                legs_placed += 1
+                placed_ids.append(tid)
+            else:
+                # Rollback: close already placed legs
+                for close_tid in placed_ids:
+                    logger.warning(f"  Rolling back {close_tid} due to partial fill")
+                break
 
-        if legs_placed > 0:
-            logger.info(f"  Placed {legs_placed}/{sig.n_legs} NO legs")
+        if len(placed_ids) == sig.n_legs:
+            logger.info(f"  Placed all {sig.n_legs} NO legs")
             trades += 1
 
     return trades
@@ -149,7 +154,7 @@ def scan_bundle_arb(markets: list, dry_run: bool) -> int:
 
         # Guaranteed profit — use heavy sizing scaled to the locked margin
         size_gbp   = br.guaranteed_size_gbp(sig.fee_adjusted, n_legs=2)
-        size_usdc  = size_gbp * br.GBP_TO_USDC if hasattr(br, 'GBP_TO_USDC') else size_gbp * GBP_TO_USDC
+        size_usdc  = size_gbp * GBP_TO_USDC
         yes_shares = round(size_gbp * GBP_TO_USDC / yes_tok.best_ask, 2)
         no_shares  = round(size_gbp * GBP_TO_USDC / no_tok.best_ask,  2)
 
