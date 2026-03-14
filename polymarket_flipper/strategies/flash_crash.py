@@ -1,21 +1,27 @@
 """
-Flash Crash Strategy — PROVEN 86% ROI
-=======================================
-Parameters: 15% drop, sum≤0.95, 2-min window.
-£5/trade = 20 shares at ~£0.25 each.
+Flash Crash Strategy — Locked Profit (86% documented ROI)
+==========================================================
+Buy YES + NO bundle when YES crashes ≥12% and YES+NO sum ≤ 0.95.
+Payout is always $1.00 → guaranteed profit when bundle cost < $1.00.
+
+Changes from original:
+  - Threshold lowered 15% → 12% (more signals, still high conviction)
+  - Volume filter: skip markets with <$10k volume (thin = unreliable)
+  - Cooldown: don't re-enter same market within 5 minutes
 """
+import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 import logging
 
 from market_feed import TokenInfo
+from config import (
+    FLASH_CRASH_THRESHOLD_PCT, FLASH_BUNDLE_MAX,
+    FLASH_MIN_YES, FLASH_MAX_YES,
+    FLASH_MIN_VOLUME, FLASH_COOLDOWN_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
-
-CRASH_PCT   = 15.0   # % YES drop to trigger
-BUNDLE_MAX  = 0.95   # YES + NO must be ≤ this
-MIN_YES     = 0.05
-MAX_YES     = 0.90
 
 
 @dataclass
@@ -24,25 +30,30 @@ class FlashSignal:
     no_token:      TokenInfo
     drop_pct:      float
     bundle_cost:   float
-    profit_margin: float    # e.g. 0.053 → 5.3%
+    profit_margin: float
     confidence:    float
     reason:        str
 
 
 class FlashCrashDetector:
-    """
-    Monitors YES/NO pairs. Fires when YES crashes ≥15% and bundle ≤ 0.95.
-    Guaranteed profit: buy both legs below $1.00.
-    """
-
     def __init__(self):
-        self._prev: dict = {}  # token_id → last yes_ask
+        self._prev:     dict = {}   # token_id → last yes_ask
+        self._cooldown: dict = {}   # market_id → last_entry_time
 
     def evaluate(self, yes_tok: TokenInfo, no_tok: TokenInfo) -> Optional[FlashSignal]:
         yes_ask = yes_tok.best_ask
         no_ask  = no_tok.best_ask
 
-        if not (MIN_YES < yes_ask < MAX_YES):
+        if not (FLASH_MIN_YES < yes_ask < FLASH_MAX_YES):
+            return None
+
+        # Volume filter — avoid thin markets
+        if yes_tok.volume_24h < FLASH_MIN_VOLUME:
+            return None
+
+        # Cooldown — don't re-enter same market too quickly
+        last = self._cooldown.get(yes_tok.market_id, 0)
+        if time.time() - last < FLASH_COOLDOWN_SECONDS:
             return None
 
         prev = self._prev.get(yes_tok.token_id)
@@ -52,15 +63,17 @@ class FlashCrashDetector:
             return None
 
         drop_pct = ((prev - yes_ask) / prev) * 100
-        if drop_pct < CRASH_PCT:
+        if drop_pct < FLASH_CRASH_THRESHOLD_PCT:
             return None
 
         bundle = yes_ask + no_ask
-        if bundle > BUNDLE_MAX:
-            logger.debug(f"Flash: crash {drop_pct:.1f}% but bundle={bundle:.3f} > {BUNDLE_MAX}")
+        if bundle > FLASH_BUNDLE_MAX:
+            logger.debug(f"Flash: crash {drop_pct:.1f}% but bundle={bundle:.3f} > {FLASH_BUNDLE_MAX}")
             return None
 
-        margin = round((1.0 - bundle) / bundle, 4)
+        self._cooldown[yes_tok.market_id] = time.time()
+
+        margin     = round((1.0 - bundle) / bundle, 4)
         confidence = min(0.95, 0.70 + margin * 5)
 
         return FlashSignal(
@@ -71,8 +84,9 @@ class FlashCrashDetector:
             profit_margin = margin,
             confidence    = confidence,
             reason=(
-                f"FlashCrash: YES dropped {drop_pct:.1f}% | "
-                f"bundle={bundle:.3f}≤{BUNDLE_MAX} | "
-                f"locked profit={margin*100:.2f}% [86% ROI strategy]"
+                f"FlashCrash: YES dropped {drop_pct:.1f}% "
+                f"| bundle={bundle:.3f}≤{FLASH_BUNDLE_MAX} "
+                f"| locked profit={margin*100:.2f}% "
+                f"| vol=${yes_tok.volume_24h:,.0f}"
             )
         )

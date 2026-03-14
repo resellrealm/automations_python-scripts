@@ -1,17 +1,17 @@
 """
 Order executor — places market orders via py-clob-client.
-Handles £5/trade sizing, open position tracking, and P&L close.
+Dynamic sizing from bankroll.py — trade size scales with balance.
 """
 import logging
 from typing import Optional
 from dataclasses import dataclass
 
 from config import (
-    RISK_PER_TRADE_USDC, DAILY_LOSS_USDC,
     PRIVATE_KEY, API_KEY, API_SECRET, API_PASSPHRASE,
-    CLOB_API_URL, GBP_TO_USDC,
+    CLOB_API_URL, GBP_TO_USDC, MAX_OPEN_TRADES, TAKER_FEE,
 )
 import database as db
+import bankroll as br
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +19,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class OrderResult:
     success:  bool
-    order_id: str = ""
+    order_id: str  = ""
     filled:   float = 0.0
     price:    float = 0.0
-    error:    str = ""
+    error:    str  = ""
 
 
 def _get_client():
-    """Return authenticated py-clob-client ClobClient."""
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import ApiCreds
@@ -36,10 +35,10 @@ def _get_client():
             api_passphrase = API_PASSPHRASE,
         )
         return ClobClient(
-            host      = CLOB_API_URL,
-            chain_id  = 137,     # Polygon mainnet
-            key       = PRIVATE_KEY,
-            creds     = creds,
+            host     = CLOB_API_URL,
+            chain_id = 137,
+            key      = PRIVATE_KEY,
+            creds    = creds,
         )
     except ImportError:
         logger.error("py-clob-client not installed. Run: pip install py-clob-client")
@@ -49,36 +48,49 @@ def _get_client():
         return None
 
 
-def calc_shares(price: float) -> float:
-    """Calculate shares to buy for £5 risk at given price."""
+def calc_shares(price: float, strategy: str = "OBMismatch") -> float:
+    """
+    Calculate shares for current bankroll-sized trade at given price.
+    Dynamic: scales with balance as bankroll grows.
+    """
     if price <= 0:
         return 0
-    usdc = RISK_PER_TRADE_USDC      # ~$6.35
+    usdc = br.trade_size_usdc(strategy, GBP_TO_USDC)
     shares = usdc / price
     return round(shares, 2)
 
 
-def place_buy(token_id: str, price: float, shares: float,
-              strategy: str, market_id: str, reason: str,
-              dry_run: bool = False) -> Optional[int]:
+def place_buy(
+    token_id: str,
+    price:    float,
+    shares:   float,
+    strategy: str,
+    market_id: str,
+    reason:   str,
+    dry_run:  bool = False,
+) -> Optional[int]:
     """
-    Place a market buy order. Returns DB trade_id on success, None on failure.
-    Respects daily loss limit — will not open if limit hit.
+    Place a buy order. Returns DB trade_id on success.
+    Checks: daily loss limit, max open trades, min price.
     """
-    if db.is_stopped_today():
+    # ── Guards ────────────────────────────────────────────────────
+    if br.is_stopped_today():
         logger.warning("Daily loss limit reached — no new trades.")
         return None
 
-    daily = db.get_daily()
-    if abs(daily["pnl_usdc"]) >= DAILY_LOSS_USDC and daily["pnl_usdc"] < 0:
-        logger.warning(f"Daily loss limit hit: ${daily['pnl_usdc']:.2f}")
-        db.mark_daily_stopped()
+    if db.count_open_trades() >= MAX_OPEN_TRADES:
+        logger.debug(f"Max open trades ({MAX_OPEN_TRADES}) reached — skipping.")
         return None
 
-    cost = round(price * shares, 4)
+    if price <= 0 or shares <= 0:
+        return None
+
+    cost_usdc  = round(price * shares, 4)
+    cost_gbp   = cost_usdc / GBP_TO_USDC
+
     logger.info(
-        f"[{'DRY RUN' if dry_run else 'LIVE'}] BUY {shares} shares @ {price:.4f} "
-        f"= ${cost:.2f} | {strategy} | {reason[:80]}"
+        f"[{'DRY RUN' if dry_run else 'LIVE'}] BUY {shares:.2f} @ {price:.4f} "
+        f"= ${cost_usdc:.2f} / £{cost_gbp:.2f} | {strategy} | {reason[:80]}"
     )
 
     if dry_run:
@@ -89,17 +101,14 @@ def place_buy(token_id: str, price: float, shares: float,
         return None
 
     try:
-        from py_clob_client.clob_types import MarketOrderArgs, OrderType
-        order = MarketOrderArgs(
-            token_id = token_id,
-            amount   = cost,
-        )
-        resp = client.create_market_order(order)
-        order_id = resp.get("orderID", "")
-        filled   = float(resp.get("takingAmount", cost) or cost)
+        from py_clob_client.clob_types import MarketOrderArgs
+        order = MarketOrderArgs(token_id=token_id, amount=cost_usdc)
+        resp  = client.create_market_order(order)
+        order_id  = resp.get("orderID", "")
+        filled    = float(resp.get("takingAmount", cost_usdc) or cost_usdc)
         act_price = filled / shares if shares else price
 
-        logger.info(f"Order placed: {order_id} | filled={filled:.4f}")
+        logger.info(f"Order placed: {order_id} | filled=${filled:.4f}")
         return db.log_trade_open(strategy, market_id, token_id, "BUY", shares, act_price, reason)
 
     except Exception as e:
@@ -109,24 +118,32 @@ def place_buy(token_id: str, price: float, shares: float,
 
 def close_position(trade: dict, exit_price: float, dry_run: bool = False):
     """
-    Close a position at exit_price. Calculates P&L and logs to DB.
-    Called at resolution or manual exit.
+    Close a position. Updates bankroll with actual P&L.
     """
-    pnl = round((exit_price - trade["entry_price"]) * trade["size"], 4)
-    pnl_gbp = pnl / GBP_TO_USDC
+    size = trade["size"]
+    entry = trade["entry_price"]
+
+    # Gross P&L
+    gross_pnl_usdc = round((exit_price - entry) * size, 4)
+
+    # Deduct taker fee on exit leg
+    fee_usdc = round(exit_price * size * TAKER_FEE, 4)
+    net_pnl_usdc = round(gross_pnl_usdc - fee_usdc, 4)
+
+    net_pnl_gbp = round(net_pnl_usdc / GBP_TO_USDC, 4)
+    won = net_pnl_usdc > 0
 
     logger.info(
-        f"CLOSE trade#{trade['id']} | entry={trade['entry_price']:.4f} "
-        f"exit={exit_price:.4f} | P&L: ${pnl:+.4f} (£{pnl_gbp:+.4f})"
+        f"CLOSE trade#{trade['id']} | entry={entry:.4f} exit={exit_price:.4f} "
+        f"| gross=${gross_pnl_usdc:+.4f} fee=${fee_usdc:.4f} net=${net_pnl_usdc:+.4f} "
+        f"(£{net_pnl_gbp:+.4f})"
     )
 
-    db.log_trade_close(trade["id"], exit_price, pnl, GBP_TO_USDC)
+    db.log_trade_close(trade["id"], exit_price, net_pnl_usdc, GBP_TO_USDC)
+    br.record_trade_result(net_pnl_gbp, won=won)
 
-    # Check if daily loss limit now hit
-    daily = db.get_daily()
-    if daily["pnl_usdc"] <= -DAILY_LOSS_USDC:
+    if br.is_stopped_today():
         logger.warning(
-            f"⛔ Daily loss limit reached: ${daily['pnl_usdc']:.2f} | "
-            f"£{daily['pnl_gbp']:.2f} — STOPPING for today."
+            f"⛔ Daily loss limit hit — stopping for today.\n"
+            f"   {br.status_line()}"
         )
-        db.mark_daily_stopped()

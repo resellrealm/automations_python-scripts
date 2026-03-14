@@ -28,17 +28,24 @@ def init_db():
             entry_price  REAL NOT NULL,
             exit_price   REAL,
             pnl_usdc     REAL,
-            status       TEXT DEFAULT 'open',   -- open / closed / failed
+            status       TEXT DEFAULT 'open',
             reason       TEXT,
             opened_at    TEXT NOT NULL,
             closed_at    TEXT
         );
         CREATE TABLE IF NOT EXISTS daily_summary (
-            trade_date   TEXT PRIMARY KEY,
-            trades       INTEGER DEFAULT 0,
-            pnl_usdc     REAL DEFAULT 0,
-            pnl_gbp      REAL DEFAULT 0,
-            stopped      INTEGER DEFAULT 0    -- 1 if daily loss limit hit
+            trade_date        TEXT PRIMARY KEY,
+            trades            INTEGER DEFAULT 0,
+            pnl_usdc          REAL DEFAULT 0,
+            pnl_gbp           REAL DEFAULT 0,
+            end_balance_gbp   REAL DEFAULT 0,
+            stopped           INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS balance_history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at TEXT NOT NULL,
+            balance_gbp REAL NOT NULL,
+            note        TEXT
         );
         """)
 
@@ -129,16 +136,27 @@ def get_open_trades() -> list:
         return [dict(r) for r in rows]
 
 
+def snapshot_balance(balance_gbp: float, note: str = ""):
+    """Record a balance snapshot for growth tracking."""
+    now = datetime.utcnow().isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO balance_history (recorded_at, balance_gbp, note) VALUES (?, ?, ?)",
+            (now, balance_gbp, note)
+        )
+
+
 def print_report():
     with _conn() as c:
         rows = c.execute(
             "SELECT * FROM daily_summary ORDER BY trade_date DESC LIMIT 30"
         ).fetchall()
-        print(f"\n{'Date':<12} {'Trades':>6} {'P&L USDC':>10} {'P&L GBP':>9} {'Stopped':>8}")
-        print("-" * 50)
+        print(f"\n{'Date':<12} {'Trades':>6} {'P&L USDC':>10} {'P&L GBP':>9} {'Balance':>9} {'Stopped':>8}")
+        print("-" * 60)
         for r in rows:
             stopped = "YES" if r["stopped"] else ""
+            bal = f"£{r['end_balance_gbp']:.2f}" if r["end_balance_gbp"] else "—"
             print(
                 f"{r['trade_date']:<12} {r['trades']:>6} "
-                f"${r['pnl_usdc']:>9.2f} £{r['pnl_gbp']:>8.2f} {stopped:>8}"
+                f"${r['pnl_usdc']:>9.2f} £{r['pnl_gbp']:>8.2f} {bal:>9} {stopped:>8}"
             )

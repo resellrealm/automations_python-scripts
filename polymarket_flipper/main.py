@@ -1,16 +1,20 @@
 """
-Polymarket Flipper — £5/trade, £5/day limit, ~8 trades/day
+Polymarket Flipper — £30 starting bankroll, compounds daily
 ============================================================
-Strategies:
-  1. Flash Crash  — buy YES+NO bundle when YES crashes ≥15% and sum ≤ 0.95 (86% ROI proven)
-  2. OB Mismatch  — heavy orderbook imbalance + spread edge after 3.15% fee
+Strategies (in priority order):
+  1. Flash Crash  — buy YES+NO bundle when YES drops ≥12%, sum ≤ 0.95 (locked profit)
+  2. OB Mismatch  — heavy orderbook imbalance + edge after 3.15% fee
   3. NO Bias      — 70% historical NO resolution on non-crypto markets
+
+Sizing: dynamic — 10% of current balance per trade (scales as you profit)
+  £30 start → £3/trade → grows to £5/trade at £50, £10/trade at £100
 
 Usage:
   python main.py              # live trading
-  python main.py --dry-run    # simulate only, no real orders
-  python main.py --report     # print 30-day P&L report
-  python main.py --once       # run one scan cycle and exit
+  python main.py --dry-run    # simulate, no real orders
+  python main.py --report     # 30-day P&L table
+  python main.py --balance    # show current bankroll + growth projection
+  python main.py --once       # one cycle then exit
 """
 import sys
 import time
@@ -23,55 +27,54 @@ from datetime import datetime
 from config import (
     POLL_INTERVAL_SECONDS, TARGET_TRADES_PER_DAY,
     ENABLE_FLASH_CRASH, ENABLE_ORDERBOOK, ENABLE_NO_BIAS,
-    RISK_PER_TRADE_USDC, DAILY_LOSS_USDC,
 )
 import database as db
+import bankroll as br
 from market_feed import (
     fetch_crypto_15min_markets, fetch_all_markets,
     market_to_tokens, fetch_orderbook, build_token_info, seconds_to_close,
 )
-from executor import place_buy, calc_shares
+from executor import place_buy, calc_shares, close_position
 from resolver import resolve_open_positions
 from strategies.flash_crash import FlashCrashDetector
 from strategies.orderbook_mismatch import OrderbookMismatchDetector
 from strategies.no_bias import NOBiasDetector
 
-# ── Logging ───────────────────────────────────────────────────────
 logging.basicConfig(
-    level  = logging.INFO,
-    format = "%(asctime)s [%(levelname)s] %(message)s",
-    handlers = [
-        logging.StreamHandler(),
-        logging.FileHandler("flipper.log"),
-    ]
+    level    = logging.INFO,
+    format   = "%(asctime)s [%(levelname)s] %(message)s",
+    handlers = [logging.StreamHandler(), logging.FileHandler("flipper.log")],
 )
 logger = logging.getLogger(__name__)
 
-# ── Strategy instances ────────────────────────────────────────────
 flash_detector = FlashCrashDetector()
 ob_detector    = OrderbookMismatchDetector()
 no_detector    = NOBiasDetector()
 
-# ── Graceful shutdown ─────────────────────────────────────────────
 _running = True
 
 def _handle_signal(sig, frame):
     global _running
-    logger.info("Shutdown signal received — stopping after current cycle.")
+    logger.info("Shutdown signal — stopping after current cycle.")
     _running = False
 
-signal.signal(signal.SIGINT, _handle_signal)
+signal.signal(signal.SIGINT,  _handle_signal)
 signal.signal(signal.SIGTERM, _handle_signal)
 
 
+# ── Strategy scanners ──────────────────────────────────────────────────────
+
 def scan_flash_crash(markets: list, dry_run: bool) -> int:
-    """Scan 15-min crypto markets for flash crash opportunities."""
+    """
+    Flash Crash — buy YES+NO bundle when YES drops ≥12% and sum ≤ 0.95.
+    Highest conviction: guaranteed locked profit. Gets 1.5x sizing.
+    Fetches orderbooks only once per market pair.
+    """
     trades = 0
-    market_tokens = defaultdict(dict)  # market_id → {YES: TokenInfo, NO: TokenInfo}
+    market_tokens = defaultdict(dict)
 
     for market in markets:
-        tokens = market_to_tokens(market)
-        for tok in tokens:
+        for tok in market_to_tokens(market):
             if not tok["token_id"]:
                 continue
             book = fetch_orderbook(tok["token_id"])
@@ -88,34 +91,33 @@ def scan_flash_crash(markets: list, dry_run: bool) -> int:
         if not sig:
             continue
 
-        # £5 = 20 shares (flash crash buys both legs)
-        per_leg_shares = calc_shares(sig.yes_token.best_ask) / 2
-
         logger.warning(
-            f"🚨 FLASH CRASH | {yes_tok.question[:60]} | "
+            f"FLASH CRASH | {yes_tok.question[:60]} | "
             f"drop={sig.drop_pct:.1f}% bundle={sig.bundle_cost:.3f} "
             f"profit={sig.profit_margin*100:.2f}%"
         )
 
-        # YES leg
+        # Split £ allocation across both legs
+        yes_shares = calc_shares(sig.yes_token.best_ask, "FlashCrash")
+        no_shares  = calc_shares(sig.no_token.best_ask,  "FlashCrash_NO")
+
         tid = place_buy(
             token_id  = yes_tok.token_id,
             price     = yes_tok.best_ask,
-            shares    = round(per_leg_shares, 2),
+            shares    = yes_shares,
             strategy  = "FlashCrash",
             market_id = market_id,
             reason    = sig.reason,
             dry_run   = dry_run,
         )
-        # NO leg
         if tid:
             place_buy(
                 token_id  = no_tok.token_id,
                 price     = no_tok.best_ask,
-                shares    = round(per_leg_shares, 2),
+                shares    = no_shares,
                 strategy  = "FlashCrash_NO",
                 market_id = market_id,
-                reason    = f"NO leg — paired flash crash | {sig.reason[:60]}",
+                reason    = f"NO leg paired | {sig.reason[:60]}",
                 dry_run   = dry_run,
             )
             trades += 1
@@ -124,17 +126,20 @@ def scan_flash_crash(markets: list, dry_run: bool) -> int:
 
 
 def scan_orderbook(markets: list, dry_run: bool) -> int:
-    """Scan markets for orderbook imbalance opportunities."""
+    """
+    OB Mismatch — heavy bid imbalance + spread edge after fee.
+    Reuses already-fetched market list (no duplicate API calls).
+    """
     trades = 0
     for market in markets:
         sec_left = seconds_to_close(market)
         if sec_left is None:
             continue
 
-        tokens = market_to_tokens(market)
-        for tok in tokens:
+        for tok in market_to_tokens(market):
             if not tok["token_id"] or tok["outcome"].upper() != "YES":
                 continue
+
             book = fetch_orderbook(tok["token_id"])
             info = build_token_info(market, tok, book)
 
@@ -142,9 +147,9 @@ def scan_orderbook(markets: list, dry_run: bool) -> int:
             if not sig:
                 continue
 
-            shares = calc_shares(sig.entry_price)
+            shares = calc_shares(sig.entry_price, "OBMismatch")
             logger.info(
-                f"📊 OB MISMATCH | {info.question[:60]} | "
+                f"OB MISMATCH | {info.question[:60]} | "
                 f"imbalance={sig.imbalance:.1f}x edge={sig.edge*100:.2f}¢"
             )
 
@@ -163,13 +168,15 @@ def scan_orderbook(markets: list, dry_run: bool) -> int:
 
 
 def scan_no_bias(markets: list, dry_run: bool) -> int:
-    """Scan broad market set for NO bias opportunities."""
+    """
+    NO Bias — 70% historical NO resolution on non-crypto markets.
+    Lowest priority, smallest sizing multiplier (0.8x).
+    """
     trades = 0
     for market in markets:
-        tokens = market_to_tokens(market)
-        for tok in tokens:
+        for tok in market_to_tokens(market):
             if not tok["token_id"] or tok["outcome"].upper() != "YES":
-                continue  # we look at YES token to infer NO price
+                continue
 
             book = fetch_orderbook(tok["token_id"])
             info = build_token_info(market, tok, book)
@@ -178,12 +185,11 @@ def scan_no_bias(markets: list, dry_run: bool) -> int:
             if not sig:
                 continue
 
-            # Buy NO side — use 1-yes price as proxy entry
             no_entry = round(sig.no_mid + 0.01, 4)
-            shares   = calc_shares(no_entry)
+            shares   = calc_shares(no_entry, "NOBias")
 
             logger.info(
-                f"📉 NO BIAS | {info.question[:60]} | "
+                f"NO BIAS | {info.question[:60]} | "
                 f"YES={sig.yes_mid:.2f} NO={sig.no_mid:.2f}"
             )
 
@@ -201,45 +207,52 @@ def scan_no_bias(markets: list, dry_run: bool) -> int:
     return trades
 
 
+# ── Main cycle ─────────────────────────────────────────────────────────────
+
 def run_cycle(dry_run: bool) -> int:
-    """One full scan cycle. Returns number of trades opened."""
-    if db.is_stopped_today():
+    if br.is_stopped_today():
         logger.warning("Daily loss limit hit — skipping cycle.")
         return 0
 
-    daily = db.get_daily()
-    trades_today = daily["trades"]
+    open_count   = db.count_open_trades()
+    daily        = db.get_daily()
     logger.info(
-        f"Cycle start | trades today={trades_today}/{TARGET_TRADES_PER_DAY} | "
-        f"P&L: ${daily['pnl_usdc']:+.2f}"
+        f"Cycle | open={open_count} trades_today={daily['trades']}/{TARGET_TRADES_PER_DAY} | "
+        f"{br.status_line()}"
     )
 
-    # Resolve any open positions first
+    # Resolve open positions first
     resolve_open_positions(dry_run=dry_run)
 
     total = 0
 
-    if ENABLE_FLASH_CRASH:
+    # Fetch crypto markets ONCE — shared by flash crash + OB mismatch
+    if ENABLE_FLASH_CRASH or ENABLE_ORDERBOOK:
         crypto_markets = fetch_crypto_15min_markets()
-        total += scan_flash_crash(crypto_markets, dry_run)
-
-    if ENABLE_ORDERBOOK:
-        crypto_markets = fetch_crypto_15min_markets()
-        total += scan_orderbook(crypto_markets, dry_run)
+        if ENABLE_FLASH_CRASH:
+            total += scan_flash_crash(crypto_markets, dry_run)
+        if ENABLE_ORDERBOOK:
+            total += scan_orderbook(crypto_markets, dry_run)
 
     if ENABLE_NO_BIAS:
         all_markets = fetch_all_markets(limit=150)
         total += scan_no_bias(all_markets, dry_run)
 
-    logger.info(f"Cycle done | new trades={total}")
+    # Snapshot balance at end of cycle
+    db.snapshot_balance(br.get_balance(), note=f"cycle trades={total}")
+
+    logger.info(f"Cycle done | new trades={total} | {br.status_line()}")
     return total
 
 
+# ── Entry point ────────────────────────────────────────────────────────────
+
 def main():
-    parser = argparse.ArgumentParser(description="Polymarket Flipper — £5/trade")
-    parser.add_argument("--dry-run", action="store_true", help="Simulate only, no real orders")
-    parser.add_argument("--report",  action="store_true", help="Print 30-day P&L and exit")
-    parser.add_argument("--once",    action="store_true", help="Run one cycle and exit")
+    parser = argparse.ArgumentParser(description="Polymarket Flipper — £30 starting bankroll")
+    parser.add_argument("--dry-run",  action="store_true", help="Simulate only")
+    parser.add_argument("--report",   action="store_true", help="Print 30-day P&L table")
+    parser.add_argument("--balance",  action="store_true", help="Show bankroll + growth projection")
+    parser.add_argument("--once",     action="store_true", help="Run one cycle and exit")
     args = parser.parse_args()
 
     db.init_db()
@@ -248,14 +261,17 @@ def main():
         db.print_report()
         return
 
+    if args.balance:
+        print(f"\n{br.status_line()}\n")
+        print(br.growth_projection())
+        return
+
     mode = "DRY RUN" if args.dry_run else "LIVE"
-    logger.info(
-        f"{'='*60}\n"
+    print(
+        f"\n{'='*60}\n"
         f"  Polymarket Flipper — {mode}\n"
-        f"  Risk: £5/trade (~${RISK_PER_TRADE_USDC:.2f} USDC)\n"
-        f"  Daily limit: £5 loss (${DAILY_LOSS_USDC:.2f} USDC)\n"
-        f"  Target: ~{TARGET_TRADES_PER_DAY} trades/day\n"
-        f"{'='*60}"
+        f"  {br.status_line()}\n"
+        f"{'='*60}\n"
     )
 
     if args.once:
@@ -267,11 +283,8 @@ def main():
             run_cycle(dry_run=args.dry_run)
         except Exception as e:
             logger.error(f"Cycle error: {e}", exc_info=True)
-
-        if not _running:
-            break
-        logger.debug(f"Sleeping {POLL_INTERVAL_SECONDS}s...")
-        time.sleep(POLL_INTERVAL_SECONDS)
+        if _running:
+            time.sleep(POLL_INTERVAL_SECONDS)
 
     logger.info("Polymarket Flipper stopped.")
 

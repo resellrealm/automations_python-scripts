@@ -14,7 +14,7 @@ import logging
 from market_feed import TokenInfo
 from config import (
     NO_MIN_PRICE, NO_MAX_PRICE, NO_MIN_VOLUME,
-    NO_MIN_LIQUIDITY, NO_AVOID_HOURS, NO_SKIP_KEYWORDS,
+    NO_MIN_LIQUIDITY, NO_AVOID_HOURS, NO_SKIP_KEYWORDS, TAKER_FEE,
 )
 
 logger = logging.getLogger(__name__)
