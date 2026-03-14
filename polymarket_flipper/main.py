@@ -26,6 +26,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from config import (
+    GBP_TO_USDC,
     POLL_INTERVAL_SECONDS, TARGET_TRADES_PER_DAY,
     ENABLE_FLASH_CRASH, ENABLE_NO_BIAS,
 )
@@ -96,7 +97,7 @@ def scan_multi_outcome(dry_run: bool) -> int:
             if not leg.no_token_id:
                 continue
 
-            shares = round(size_gbp * 1.27 / leg.no_price, 2)
+            shares = round(size_gbp * GBP_TO_USDC / leg.no_price, 2)
 
             tid = place_buy(
                 token_id  = leg.no_token_id,
@@ -148,9 +149,9 @@ def scan_bundle_arb(markets: list, dry_run: bool) -> int:
 
         # Guaranteed profit — use heavy sizing scaled to the locked margin
         size_gbp   = br.guaranteed_size_gbp(sig.fee_adjusted, n_legs=2)
-        size_usdc  = size_gbp * br.GBP_TO_USDC if hasattr(br, 'GBP_TO_USDC') else size_gbp * 1.27
-        yes_shares = round(size_gbp * 1.27 / yes_tok.best_ask, 2)
-        no_shares  = round(size_gbp * 1.27 / no_tok.best_ask,  2)
+        size_usdc  = size_gbp * br.GBP_TO_USDC if hasattr(br, 'GBP_TO_USDC') else size_gbp * GBP_TO_USDC
+        yes_shares = round(size_gbp * GBP_TO_USDC / yes_tok.best_ask, 2)
+        no_shares  = round(size_gbp * GBP_TO_USDC / no_tok.best_ask,  2)
 
         logger.warning(
             f"BUNDLE ARB | {yes_tok.question[:65]} | "
@@ -207,7 +208,7 @@ def scan_resolution_lag(markets: list, dry_run: bool) -> int:
             # Scale with confidence: 92¢ winner gets more than 88¢ winner
             semi_margin = sig.profit_margin * sig.confidence   # discount by confidence
             size_gbp    = br.guaranteed_size_gbp(semi_margin, n_legs=1)
-            shares      = round(size_gbp * 1.27 / sig.win_price, 2)
+            shares      = round(size_gbp * GBP_TO_USDC / sig.win_price, 2)
 
             logger.info(
                 f"RESOLUTION LAG | {info.question[:65]} | "
@@ -239,36 +240,40 @@ def scan_no_bias(markets: list, dry_run: bool) -> int:
     """
     trades = 0
     for market in markets:
-        for tok in market_to_tokens(market):
-            if not tok["token_id"] or tok["outcome"].upper() != "YES":
-                continue
+        tokens = market_to_tokens(market)
+        token_map = {t["outcome"].upper(): t for t in tokens if t["token_id"]}
+        if "YES" not in token_map or "NO" not in token_map:
+            continue
 
-            book = fetch_orderbook(tok["token_id"])
-            info = build_token_info(market, tok, book)
+        yes_tok = token_map["YES"]
+        no_tok  = token_map["NO"]
 
-            sig = no_detector.evaluate(info)
-            if not sig:
-                continue
+        book = fetch_orderbook(yes_tok["token_id"])
+        info = build_token_info(market, yes_tok, book)
 
-            no_entry = round(sig.no_mid + 0.01, 4)
-            shares   = calc_shares(no_entry, "NOBias")   # 0.8x sizing
+        sig = no_detector.evaluate(info)
+        if not sig:
+            continue
 
-            logger.info(
-                f"NO BIAS | {info.question[:65]} | "
-                f"YES={sig.yes_mid:.2f} NO={sig.no_mid:.2f} | conf={sig.confidence:.2f}"
-            )
+        no_entry = round(sig.no_mid + 0.01, 4)
+        shares   = calc_shares(no_entry, "NOBias")
 
-            tid = place_buy(
-                token_id  = info.token_id,
-                price     = no_entry,
-                shares    = shares,
-                strategy  = "NOBias",
-                market_id = info.market_id,
-                reason    = sig.reason,
-                dry_run   = dry_run,
-            )
-            if tid:
-                trades += 1
+        logger.info(
+            f"NO BIAS | {info.question[:65]} | "
+            f"YES={sig.yes_mid:.2f} NO={sig.no_mid:.2f} | conf={sig.confidence:.2f}"
+        )
+
+        tid = place_buy(
+            token_id  = no_tok["token_id"],
+            price     = no_entry,
+            shares    = shares,
+            strategy  = "NOBias",
+            market_id = info.market_id,
+            reason    = sig.reason,
+            dry_run   = dry_run,
+        )
+        if tid:
+            trades += 1
     return trades
 
 

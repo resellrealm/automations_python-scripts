@@ -58,5 +58,54 @@ NO_SKIP_KEYWORDS = [
 # ── Polling — every 15s (opportunities last avg 2.7s, we catch slower ones)
 POLL_INTERVAL_SECONDS = 15
 
+# ── Strategy thresholds ───────────────────────────────────────────
+FLASH_CRASH_THRESHOLD_PCT = 15.0
+FLASH_CRASH_MIN_CONFIDENCE = 0.7
+ORDERBOOK_IMBALANCE_RATIO = 3.0
+RESOLUTION_LAG_WINDOW_HOURS = 24
+NO_BIAS_MIN_CONFIDENCE = 0.6
+
+# ── Flash crash params ────────────────────────────────────────────
+FLASH_BUNDLE_MAX = 0.95
+FLASH_MIN_YES = 0.20
+FLASH_MAX_YES = 0.80
+FLASH_MIN_VOLUME = 10_000
+FLASH_COOLDOWN_SECONDS = 300
+
+# ── Orderbook mismatch params ─────────────────────────────────────
+ORDERBOOK_MIN_VOLUME = 5_000
+ORDERBOOK_MIN_SPREAD = 0.02
+ORDERBOOK_MAX_SPREAD = 0.15
+
+# ── NO bias params ────────────────────────────────────────────────
+NO_BIAS_MIN_YES_PRICE = 0.55
+NO_BIAS_MAX_YES_PRICE = 0.85
+NO_BIAS_MIN_VOLUME = 2_000
+
+# ── Orderbook mismatch params ─────────────────────────────────────
+OB_MIN_EDGE = 0.02
+OB_IMBALANCE_RATIO = 2.0
+OB_SECONDS_MIN = 60
+OB_SECONDS_MAX = 3600
+OB_MIN_VOLUME = 5_000
+
 # ── Taker fee ──────────────────────────────────────────────────────
 TAKER_FEE = 0.0315  # 3.15% worst case (crypto markets at 50% price point)
+
+# ── API validation ────────────────────────────────────────────────
+def validate_api_keys() -> bool:
+    """Check that required API credentials are set."""
+    missing = []
+    if not PRIVATE_KEY:
+        missing.append("POLYMARKET_PRIVATE_KEY")
+    if not API_KEY:
+        missing.append("POLYMARKET_API_KEY")
+    if not API_SECRET:
+        missing.append("POLYMARKET_API_SECRET")
+    if not API_PASSPHRASE:
+        missing.append("POLYMARKET_API_PASSPHRASE")
+    if missing:
+        import logging
+        logging.getLogger(__name__).error(f"Missing API keys: {', '.join(missing)}")
+        return False
+    return True

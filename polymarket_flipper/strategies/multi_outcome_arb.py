@@ -88,7 +88,11 @@ class MultiOutcomeArbDetector:
                 timeout=10,
             )
             r.raise_for_status()
-            return r.json()
+            try:
+                return r.json()
+            except (ValueError, requests.exceptions.JSONDecodeError) as je:
+                logger.error(f"Events JSON parse failed: {je} | body={r.text[:200]}")
+                return []
         except Exception as e:
             logger.error(f"Events fetch failed: {e}")
             return []

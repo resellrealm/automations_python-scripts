@@ -29,7 +29,7 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import dict as Dict
+from typing import Optional, Dict
 
 import database as db
 

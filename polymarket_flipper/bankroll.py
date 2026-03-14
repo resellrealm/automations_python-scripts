@@ -56,7 +56,7 @@ _DEFAULT_MULTIPLIERS = {
     "BundleArb":       1.0,
     "BundleArb_NO":    1.0,
     "ResolutionLag":   1.0,
-    "NOBias":          1.2,
+    "NOBias":          0.8,
     "FlashCrash":      1.0,
     "FlashCrash_NO":   1.0,
 }
