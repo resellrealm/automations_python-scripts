@@ -15,7 +15,7 @@ HEARTBEAT_SCRIPT = PROJECT / "claude_agents" / "heartbeat.py"
 LOG_FILE = PROJECT / "heartbeat.log"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT  = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT  = os.getenv("TELEGRAM_USER_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 def _telegram(msg: str):
