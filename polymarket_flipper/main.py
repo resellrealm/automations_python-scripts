@@ -40,6 +40,7 @@ from resolver import resolve_open_positions
 from strategies.bundle_arb import BundleArbDetector
 from strategies.resolution_lag import ResolutionLagDetector
 from strategies.no_bias import NOBiasDetector
+from strategies.multi_outcome_arb import MultiOutcomeArbDetector
 
 logging.basicConfig(
     level    = logging.INFO,
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
 bundle_detector = BundleArbDetector()
 lag_detector    = ResolutionLagDetector()
 no_detector     = NOBiasDetector()
+multi_detector  = MultiOutcomeArbDetector()
 
 _running = True
 
@@ -61,6 +63,53 @@ def _handle_signal(sig, frame):
 
 signal.signal(signal.SIGINT,  _handle_signal)
 signal.signal(signal.SIGTERM, _handle_signal)
+
+
+# ── Strategy 0: Multi-Outcome NO Bundle ────────────────────────────────────
+
+def scan_multi_outcome(dry_run: bool) -> int:
+    """
+    TOP PRIORITY. Scan Polymarket events with 3+ outcomes.
+    Buy NO on every single outcome when YES prices sum > 1.00 + fees.
+    GUARANTEED profit regardless of which outcome wins.
+
+    Profit formula: YES_sum - 1.00 (e.g. sum=1.08 → 8% guaranteed)
+    Execution: one NO buy per outcome leg, all same market.
+    """
+    trades = 0
+    signals = multi_detector.scan(limit=100)
+
+    for sig in signals:
+        logger.warning(
+            f"MULTI-OUTCOME ARB | {sig.event_title[:60]} | "
+            f"{sig.n_legs} outcomes | YES_sum={sig.yes_sum:.3f} | "
+            f"net={sig.net_profit*100:.2f}% GUARANTEED"
+        )
+
+        legs_placed = 0
+        for leg in sig.legs:
+            if not leg.no_token_id:
+                continue
+
+            shares = calc_shares(leg.no_price, "FlashCrash")   # 1.5x multiplier
+
+            tid = place_buy(
+                token_id  = leg.no_token_id,
+                price     = leg.no_price,
+                shares    = shares,
+                strategy  = "MultiOutcomeArb",
+                market_id = leg.market_id,
+                reason    = f"NO on '{leg.outcome[:40]}' | {sig.reason[:60]}",
+                dry_run   = dry_run,
+            )
+            if tid:
+                legs_placed += 1
+
+        if legs_placed > 0:
+            logger.info(f"  Placed {legs_placed}/{sig.n_legs} NO legs")
+            trades += 1
+
+    return trades
 
 
 # ── Strategy 1: Bundle Arb ─────────────────────────────────────────────────
@@ -225,11 +274,12 @@ def run_cycle(dry_run: bool) -> int:
 
     resolve_open_positions(dry_run=dry_run)
 
-    # Fetch all markets ONCE — used by all three strategies
+    # Fetch all markets ONCE — shared by binary strategies
     all_markets = fetch_all_markets(limit=200)
 
     total  = 0
-    total += scan_bundle_arb(all_markets, dry_run)      # Strategy 1 — GUARANTEED
+    total += scan_multi_outcome(dry_run)                # Strategy 0 — GUARANTEED (multi-leg)
+    total += scan_bundle_arb(all_markets, dry_run)      # Strategy 1 — GUARANTEED (binary)
     total += scan_resolution_lag(all_markets, dry_run)  # Strategy 2 — semi-guaranteed
     total += scan_no_bias(all_markets, dry_run)         # Strategy 3 — directional
 
@@ -263,7 +313,7 @@ def main():
     print(
         f"\n{'='*60}\n"
         f"  Polymarket Flipper — {mode}\n"
-        f"  Strategies: BundleArb + ResolutionLag + NOBias\n"
+        f"  Strategies: MultiOutcomeArb + BundleArb + ResolutionLag + NOBias\n"
         f"  Poll: every {POLL_INTERVAL_SECONDS}s\n"
         f"  {br.status_line()}\n"
         f"{'='*60}\n"
