@@ -22,6 +22,7 @@ Run as daemon on VPS:
 import logging
 import subprocess
 import requests as req
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -39,8 +40,53 @@ HELP_TEXT = (
     "🤖 <b>OpenClaw Messenger</b>\n\n"
     "Send any message → Claude answers\n"
     "Start with <code>/kimi</code> → Kimi AI answers\n\n"
+    "<b>Quick shortcuts:</b>\n"
+    "  <code>done?</code> or <code>is it done</code> → task status\n"
+    "  <code>status</code> → all bots + tasks health\n"
+    "  <code>balance</code> → Polymarket P&amp;L\n\n"
     "That's it. No other commands."
 )
+
+# Phrases that mean "check task status"
+TASK_STATUS_PHRASES = {
+    "done?", "is it done", "is it done?", "done yet", "done yet?",
+    "finished?", "finished yet", "are you done", "are you done?",
+    "is the task done", "task done?", "task status", "what's the status",
+    "whats the status", "still running?", "still going?",
+}
+
+# Phrases that mean "check all bots"
+STATUS_PHRASES = {"status", "bot status", "all bots", "health", "health check"}
+
+# Phrases that mean "show P&L"
+BALANCE_PHRASES = {"balance", "pnl", "p&l", "how much", "profit", "money", "earnings"}
+
+
+def _quick_task_status() -> str:
+    """Read tasks.json and return a quick status string."""
+    tasks_file = Path(__file__).parent.parent / "vps_tasks" / "tasks.json"
+    if not tasks_file.exists():
+        return "📭 No background tasks recorded."
+    try:
+        import json
+        tasks = json.loads(tasks_file.read_text())
+        if not tasks:
+            return "📭 No background tasks recorded."
+        lines = []
+        for t in sorted(tasks.values(), key=lambda x: x.get("started", ""), reverse=True)[:5]:
+            icon = {"running": "⏳", "done": "✅", "failed": "❌"}.get(t.get("status"), "❓")
+            name = t.get("name", "task")
+            fin  = t.get("finished", "")[:16].replace("T", " ")
+            tail = t.get("output_tail", "")[-200:]
+            line = f"{icon} <b>{name}</b> — {t.get('status')}"
+            if fin:
+                line += f" at {fin}"
+            if tail and t.get("status") in ("done", "failed"):
+                line += f"\n<code>{tail}</code>"
+            lines.append(line)
+        return "\n\n".join(lines)
+    except Exception as e:
+        return f"❌ Could not read task status: {e}"
 
 
 # ── AI backends ───────────────────────────────────────────────────────────────
@@ -109,6 +155,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # /help
     if text.lower() in ("/help", "/start"):
         await update.message.reply_html(HELP_TEXT)
+        return
+
+    # Quick shortcuts — no need to go to Claude
+    text_lower = text.lower().strip("?! ")
+    if text_lower in TASK_STATUS_PHRASES or "done" in text_lower and len(text) < 30:
+        await update.message.reply_html(_quick_task_status())
+        return
+
+    if text_lower in STATUS_PHRASES:
+        result = subprocess.run(
+            ["python", "vps_tasks/task_runner.py", "--status"],
+            capture_output=True, text=True, cwd=str(Path(__file__).parent.parent)
+        )
+        reply = result.stdout.strip() or "No task data."
+        await update.message.reply_html(reply or "No tasks running.")
         return
 
     # Route
