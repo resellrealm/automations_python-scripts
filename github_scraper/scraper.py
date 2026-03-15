@@ -23,9 +23,14 @@ import argparse
 import requests
 from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load .env from repo root (parent of github_scraper/)
+load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).parent / ".env")  # fallback: local .env
 
 # ── Config ────────────────────────────────────────────────────────────
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")   # optional — add to .env for higher rate limits
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 BASE_URL      = "https://api.github.com"
 RESULTS_DIR   = Path(__file__).parent / "results"
 
