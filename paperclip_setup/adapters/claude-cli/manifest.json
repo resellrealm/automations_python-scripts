@@ -1,0 +1,31 @@
+{
+  "name": "claude-cli",
+  "version": "1.0.0",
+  "description": "Claude CLI adapter for Paperclip - Architecture, design, and planning",
+  "author": "user",
+  "runtime": "bash",
+  "entrypoint": "./adapter.sh",
+  "supported_task_types": [
+    "architecture",
+    "frontend",
+    "design",
+    "api",
+    "database",
+    "review",
+    "planning",
+    "general"
+  ],
+  "env_vars": [
+    "PAPERCLIP_CLAUDE_CLI_PATH",
+    "PAPERCLIP_WORK_DIR",
+    "PAPERCLIP_LOG_FILE"
+  ],
+  "capabilities": {
+    "architecture_design": true,
+    "ui_ux_design": true,
+    "api_design": true,
+    "database_design": true,
+    "project_planning": true,
+    "code_review": true
+  }
+}

@@ -1,0 +1,204 @@
+{
+  "company": {
+    "name": "Autonomous App Studio",
+    "mission": "Build high-quality full-stack applications with minimal human intervention",
+    "description": "AI-powered development agency that builds apps from idea to deployment"
+  },
+  "agents": [
+    {
+      "id": "ceo",
+      "name": "CEO",
+      "role": "Chief Executive Officer",
+      "adapter": "claude-cli",
+      "responsibilities": [
+        "Define project scope and requirements",
+        "Break down complex projects into phases",
+        "Assign tasks to department leads",
+        "Review major architectural decisions",
+        "Approve deployments"
+      ],
+      "task_types": ["planning", "architecture"],
+      "reports_to": null,
+      "monthly_budget": 50,
+      "heartbeat_interval": "1h"
+    },
+    {
+      "id": "cto",
+      "name": "CTO",
+      "role": "Chief Technology Officer",
+      "adapter": "claude-cli",
+      "responsibilities": [
+        "Design system architecture",
+        "Choose tech stack",
+        "Review API designs",
+        "Database schema decisions",
+        "Security review"
+      ],
+      "task_types": ["architecture", "api", "database"],
+      "reports_to": "ceo",
+      "monthly_budget": 40,
+      "heartbeat_interval": "30m"
+    },
+    {
+      "id": "frontend-lead",
+      "name": "Frontend Lead",
+      "role": "Frontend Engineering Lead",
+      "adapter": "claude-cli",
+      "responsibilities": [
+        "Design component hierarchy",
+        "Create design system",
+        "Build page layouts",
+        "Review UI/UX",
+        "Ensure responsive design"
+      ],
+      "task_types": ["frontend", "design"],
+      "reports_to": "cto",
+      "monthly_budget": 30,
+      "heartbeat_interval": "15m"
+    },
+    {
+      "id": "frontend-dev",
+      "name": "Frontend Developer",
+      "role": "Frontend Developer",
+      "adapter": "kimi-cli",
+      "responsibilities": [
+        "Implement React components",
+        "Write TypeScript types",
+        "Style with Tailwind CSS",
+        "Connect to APIs",
+        "Write tests"
+      ],
+      "task_types": ["code", "fix"],
+      "reports_to": "frontend-lead",
+      "monthly_budget": 25,
+      "heartbeat_interval": "10m"
+    },
+    {
+      "id": "backend-lead",
+      "name": "Backend Lead",
+      "role": "Backend Engineering Lead",
+      "adapter": "claude-cli",
+      "responsibilities": [
+        "Design API contracts",
+        "Database schema design",
+        "Authentication strategy",
+        "Performance optimization",
+        "Security implementation"
+      ],
+      "task_types": ["api", "database", "architecture"],
+      "reports_to": "cto",
+      "monthly_budget": 30,
+      "heartbeat_interval": "15m"
+    },
+    {
+      "id": "backend-dev",
+      "name": "Backend Developer",
+      "role": "Backend Developer",
+      "adapter": "kimi-cli",
+      "responsibilities": [
+        "Implement API endpoints",
+        "Write database queries",
+        "Setup authentication",
+        "Write middleware",
+        "API documentation"
+      ],
+      "task_types": ["code", "fix"],
+      "reports_to": "backend-lead",
+      "monthly_budget": 25,
+      "heartbeat_interval": "10m"
+    },
+    {
+      "id": "qa-agent",
+      "name": "QA Engineer",
+      "role": "Quality Assurance",
+      "adapter": "kimi-cli",
+      "responsibilities": [
+        "Test features end-to-end",
+        "Identify bugs",
+        "Review code quality",
+        "Performance testing",
+        "Security checks"
+      ],
+      "task_types": ["review", "analyze"],
+      "reports_to": "cto",
+      "monthly_budget": 20,
+      "heartbeat_interval": "20m"
+    },
+    {
+      "id": "devops-agent",
+      "name": "DevOps Engineer",
+      "role": "DevOps",
+      "adapter": "kimi-cli",
+      "responsibilities": [
+        "Setup deployment pipelines",
+        "Configure environments",
+        "Monitor production",
+        "Handle infrastructure",
+        "Database migrations"
+      ],
+      "task_types": ["shell", "code"],
+      "reports_to": "cto",
+      "monthly_budget": 20,
+      "heartbeat_interval": "30m"
+    }
+  ],
+  "skills": [
+    "kimi-cli",
+    "claude-cli",
+    "app-development"
+  ],
+  "workflows": [
+    {
+      "name": "New App Request",
+      "trigger": "ticket with label 'new-app'",
+      "steps": [
+        "CEO reviews requirements",
+        "CEO assigns to CTO for architecture",
+        "CTO creates API/database design tickets",
+        "CTO creates frontend tickets",
+        "Backend team implements",
+        "Frontend team implements",
+        "QA tests",
+        "DevOps deploys",
+        "CEO approves"
+      ]
+    },
+    {
+      "name": "Bug Fix",
+      "trigger": "ticket with label 'bug'",
+      "steps": [
+        "QA verifies bug",
+        "Assign to appropriate dev",
+        "Dev fixes",
+        "QA verifies fix",
+        "Deploy"
+      ]
+    },
+    {
+      "name": "Feature Addition",
+      "trigger": "ticket with label 'feature'",
+      "steps": [
+        "CTO reviews impact",
+        "Update architecture if needed",
+        "Backend implements API changes",
+        "Frontend implements UI",
+        "QA tests",
+        "Deploy"
+      ]
+    }
+  ],
+  "settings": {
+    "auto_assign": true,
+    "require_approval_for": [
+      "architecture_changes",
+      "production_deploy",
+      "database_migrations",
+      "new_agent_hire"
+    ],
+    "notification_channels": [
+      "telegram",
+      "email"
+    ],
+    "project_base_path": "/home/user/projects"
+  }
+}

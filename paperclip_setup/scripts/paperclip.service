@@ -1,0 +1,31 @@
+[Unit]
+Description=Paperclip AI - Autonomous Company Orchestration
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=%I
+WorkingDirectory=/home/%I/.paperclip
+Environment=NODE_ENV=production
+Environment=PAPERCLIP_PORT=3000
+Environment=PAPERCLIP_API_PORT=3001
+Environment=PAPERCLIP_DATA_DIR=/home/%I/.paperclip/data
+Environment=PAPERCLIP_KIMI_CLI_PATH=/usr/local/bin/kimi
+Environment=PAPERCLIP_CLAUDE_CLI_PATH=/usr/local/bin/claude
+Environment=PAPERCLIP_LOG_LEVEL=info
+Environment=PAPERCLIP_WORK_DIR=/tmp/paperclip-work
+
+# Start Paperclip
+ExecStart=/usr/bin/npx paperclipai start
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/paperclip/paperclip.log
+StandardError=append:/var/log/paperclip/paperclip-error.log
+
+[Install]
+WantedBy=multi-user.target

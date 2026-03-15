@@ -1,0 +1,27 @@
+{
+  "name": "kimi-cli",
+  "version": "1.0.0",
+  "description": "Kimi CLI adapter for Paperclip - Fast code generation and analysis",
+  "author": "user",
+  "runtime": "bash",
+  "entrypoint": "./adapter.sh",
+  "supported_task_types": [
+    "code",
+    "analyze",
+    "fix",
+    "review",
+    "shell",
+    "general"
+  ],
+  "env_vars": [
+    "PAPERCLIP_KIMI_CLI_PATH",
+    "PAPERCLIP_WORK_DIR",
+    "PAPERCLIP_LOG_FILE"
+  ],
+  "capabilities": {
+    "code_generation": true,
+    "file_modification": true,
+    "project_analysis": true,
+    "shell_execution": true
+  }
+}
