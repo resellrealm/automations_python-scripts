@@ -4,6 +4,9 @@
 **Platforms:** iOS, iPadOS, watchOS  
 **Tagline:** "Every sport. Every score. One app."
 
+**Mascot:** Luci the Eagle — geometric, precision eagle. Sharp wings, steel-blue eye. See `design/DESIGN_SYSTEM.md`.
+**Fonts:** Montserrat Bold (brand/headings — strong, confident, eagle energy) · Bebas Neue (scores — scoreboard display)
+
 ---
 
 ## Overview
@@ -35,10 +38,10 @@ Surve is a premium, frictionless score tracking app for ALL sports. While tennis
 
 ### Typography
 
-- **Display:** SF Pro Display (iOS system)
-- **Body:** SF Pro Text
-- **Monospace:** SF Mono (for scores)
-- **Sizes:** Dynamic Type support throughout
+- **Brand / Headings:** Montserrat Bold — strong, geometric, premium. Eagle energy. Sports logos live here.
+- **Score Display:** Bebas Neue — scoreboard display only. Live scores at 96pt look like Wimbledon.
+- **Monospace:** SF Mono — for stats/data
+- See `design/DESIGN_SYSTEM.md` for full Swift type scale and mood-match reasoning
 
 ### Haptics
 
@@ -352,12 +355,19 @@ Home (Recent Matches)
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Swift + Vapor (or Node.js + Express) |
-| Database | PostgreSQL |
-| Real-time | WebSockets |
-| Sync | CloudKit (primary), iCloud backup |
-| Auth | Apple Sign In |
-| Push | APNS |
+| **Backend** | **Supabase** (PostgreSQL + Auth + Realtime + Edge Functions) |
+| Database | PostgreSQL (via Supabase) |
+| Real-time | Supabase Realtime (v2 — live score sharing) |
+| Sync | CloudKit (primary offline), Supabase (cloud backup) |
+| Auth | Apple Sign In → Supabase Auth |
+| Push | APNS via Supabase Edge Functions |
+
+> **Backend keys needed for iOS app:**
+> - `SUPABASE_URL` — your project URL (https://[ref].supabase.co) — get from Supabase Dashboard
+> - `SUPABASE_ANON_KEY` — your public key — safe to include in app ✅
+> - `SERVICE_ROLE_KEY` — **NEVER in the app** — Edge Functions only ✅
+>
+> See `backend/SUPABASE_SETUP.md` for full setup guide, SQL migrations, and RLS policies.
 
 ### Database Schema
 

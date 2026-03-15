@@ -4,6 +4,9 @@
 **Platforms:** iOS, iPadOS, watchOS  
 **Tagline:** "Never forget where you parked."
 
+**Mascot:** The Panther — sleek black silhouette, single blue eye. Appears throughout the app. See `design/DESIGN_SYSTEM.md`.
+**Fonts:** Space Grotesk Bold (brand/headings — sleek, stealthy, panther energy) · Bebas Neue (timer display — race clock)
+
 ---
 
 ## Overview
@@ -42,9 +45,10 @@ Using **CartoDB Dark Matter** or custom styled **Mapbox**:
 
 ### Typography
 
-- **Display:** SF Pro Display Bold
-- **Body:** SF Pro Text
-- **Monospace:** SF Mono (for coordinates, times)
+- **Brand / Headings:** Space Grotesk Bold — sleek, slightly futuristic, precision tech. Panther energy.
+- **Timer / Display:** Bebas Neue — "2h 34m" at 72pt looks like a race clock. Impossible to miss.
+- **Monospace:** SF Mono — coordinates, rates
+- See `design/DESIGN_SYSTEM.md` for full Swift type scale and mood-match reasoning
 
 ### Haptics
 
