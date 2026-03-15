@@ -211,11 +211,13 @@ def print_users(results: list):
 # ── Save ──────────────────────────────────────────────────────────────
 
 def save_results(query: str, search_type: str, results: list):
-    RESULTS_DIR.mkdir(exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     slug      = query.replace(" ", "_").replace("/", "-")[:40]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename  = RESULTS_DIR / f"{search_type}_{slug}_{timestamp}.json"
+    base      = RESULTS_DIR / f"{search_type}_{slug}_{timestamp}"
 
+    # Always save JSON
+    json_file = Path(str(base) + ".json")
     output = {
         "query":       query,
         "type":        search_type,
@@ -223,9 +225,51 @@ def save_results(query: str, search_type: str, results: list):
         "searched_at": datetime.now().isoformat(),
         "results":     results,
     }
-    filename.write_text(json.dumps(output, indent=2))
-    print(f"\n💾 Saved {len(results)} results → {filename}")
-    return filename
+    json_file.write_text(json.dumps(output, indent=2))
+
+    # Always save human-readable .txt
+    txt_file = Path(str(base) + ".txt")
+    lines = [
+        f"GitHub Search Results",
+        f"=====================",
+        f"Query:   {query}",
+        f"Type:    {search_type}",
+        f"Found:   {len(results)}",
+        f"Date:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"",
+    ]
+    for i, r in enumerate(results, 1):
+        if search_type == "repos":
+            lines += [
+                f"#{i} {r['name']}",
+                f"   URL:     {r['url']}",
+                f"   Stars:   {r['stars']}  Forks: {r['forks']}  Lang: {r['language']}",
+                f"   Updated: {r['updated']}",
+                f"   Desc:    {r['description']}",
+                f"   Topics:  {', '.join(r['topics']) if r['topics'] else 'none'}",
+                f"",
+            ]
+        elif search_type == "code":
+            lines += [
+                f"#{i} {r['file']} — {r['repo']}",
+                f"   Path:    {r['path']}",
+                f"   URL:     {r['file_url']}",
+                f"",
+            ]
+        elif search_type == "users":
+            lines += [
+                f"#{i} @{r['username']} — {r['name']}",
+                f"   URL:       {r['url']}",
+                f"   Followers: {r['followers']}  Repos: {r['repos']}",
+                f"   Bio:       {r['bio']}",
+                f"",
+            ]
+    txt_file.write_text("\n".join(lines))
+
+    print(f"\n📁 Results saved to folder: {RESULTS_DIR}")
+    print(f"   JSON: {json_file.name}")
+    print(f"   TXT:  {txt_file.name}")
+    return json_file
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -240,7 +284,7 @@ def main():
     parser.add_argument("--sort",         default="stars",
                         choices=["stars", "forks", "updated", "best-match"],
                         help="Sort order for repos (default: stars)")
-    parser.add_argument("--save",   "-o", action="store_true", help="Save results to file")
+    parser.add_argument("--save",   "-o", action="store_true", help="(always saves automatically)")
     parser.add_argument("--readme", "-r", action="store_true",
                         help="Fetch README for top 3 repos (repos only)")
     parser.add_argument("--rate",         action="store_true", help="Show rate limit info")
@@ -277,8 +321,8 @@ def main():
 
     print(f"\n✅ Found {len(results)} results | {_rate_limit_info()}")
 
-    if args.save:
-        save_results(args.search, args.type, results)
+    # Always save — no flag needed
+    save_results(args.search, args.type, results)
 
 
 if __name__ == "__main__":
